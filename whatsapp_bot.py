@@ -89,7 +89,6 @@ class WhatsAppBot:
             if "context" in msg or "navigation" in msg or "target closed" in msg:
                 print(f"  -> Pagina perdida durante evaluate: {safe(str(e)[:60])}")
                 await self._recuperar_pagina()
-                return None
             raise
 
     async def _recuperar_pagina(self):
@@ -98,16 +97,35 @@ class WhatsAppBot:
         try:
             if not self.page or self.page.is_closed():
                 self.page = await self.context.new_page()
-            await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=30000)
+            await self.page.goto("https://web.whatsapp.com", wait_until="load", timeout=30000)
         except Exception as e:
-            print(f"  -> Erro na recuperacao: {safe(str(e)[:60])}")
+            print(f"  -> Erro na recuperacao: {safe(str(e)[:60])}, tentando nova pagina...")
             try:
                 self.page = await self.context.new_page()
-                await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=30000)
+                await self.page.goto("https://web.whatsapp.com", wait_until="load", timeout=30000)
             except:
                 pass
-        await asyncio.sleep(5)
-        print("  -> Pagina recuperada.")
+        for i in range(15):
+            try:
+                if await self.page.query_selector('#side'):
+                    print("  -> Login confirmado apos recuperacao.")
+                    await asyncio.sleep(2)
+                    return
+            except:
+                pass
+            await asyncio.sleep(1)
+        print("  -> Pagina carregada (pode precisar de QR code).")
+        await asyncio.sleep(2)
+
+    async def _garantir_pagina_principal(self):
+        try:
+            url = self.page.url
+            if "send?phone=" in url or "/accept" in url:
+                print("  -> Voltando para pagina principal...")
+                await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(3)
+        except:
+            pass
 
     async def _atualizar_mapa_contatos(self):
         agora = time.time()
@@ -193,6 +211,7 @@ class WhatsAppBot:
             print(f"  [mapa] erro: {safe(str(e)[:80])}")
 
     async def detectar_chats(self):
+        await self._garantir_pagina_principal()
         await self._atualizar_mapa_contatos()
         mapa_str = json.dumps(self.mapa_contatos)
         codigo = """
