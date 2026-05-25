@@ -30,6 +30,8 @@ class WhatsAppBot:
         self.logado = False
         self.vistos = set()
         self.processando = {}
+        self.mapa_contatos = {}
+        self.ultimo_mapa = 0
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -79,9 +81,9 @@ class WhatsAppBot:
         print("Tempo limite excedido.")
         return False
 
-    async def avaliar(self, codigo: str):
+    async def avaliar(self, codigo: str, *args):
         try:
-            return await self.page.evaluate(codigo)
+            return await self.page.evaluate(codigo, *args)
         except Exception as e:
             msg = str(e).lower()
             if "context" in msg or "navigation" in msg or "target closed" in msg:
@@ -103,9 +105,95 @@ class WhatsAppBot:
         await asyncio.sleep(5)
         print("  -> Pagina recuperada (ou nova aba criada).")
 
+    async def _atualizar_mapa_contatos(self):
+        agora = time.time()
+        if agora - self.ultimo_mapa < 30:
+            return
+        try:
+            raw = await self.avaliar("""
+                async (selfNum) => {
+                    const db = await new Promise(r => {
+                        const req = indexedDB.open('model-storage');
+                        req.onsuccess = () => r(req.result);
+                    });
+                    const out = {};
+
+                    // 1. Contact store: extrai telefone apenas de JIDs com dominio c.us ou s.whatsapp.net
+                    {
+                        const tx = db.transaction('contact', 'readonly');
+                        const store = tx.objectStore('contact');
+                        const all = await new Promise(r => {
+                            const req = store.getAll();
+                            req.onsuccess = () => r(req.result);
+                        });
+                        for (const c of all) {
+                            const name = c.name || c.pushname || '';
+                            if (!name || !c.id) continue;
+                            const parts = c.id.split('@');
+                            const domain = parts[1] || '';
+                            const phone = parts[0];
+                            if ((domain === 'c.us' || domain === 's.whatsapp.net') && /^\\d+$/.test(phone) && phone !== selfNum) {
+                                out[name] = phone;
+                            }
+                        }
+                    }
+
+                    // 2. Message store: lid -> phone, cruzar com contact names
+                    {
+                        const lidPhone = {};
+                        const tx = db.transaction('message', 'readonly');
+                        const store = tx.objectStore('message');
+                        const all = await new Promise(r => {
+                            const req = store.getAll();
+                            req.onsuccess = () => r(req.result);
+                        });
+                        for (const m of all) {
+                            if (!m.id) continue;
+                            const parts = m.id.split('_');
+                            if (parts.length < 2) continue;
+                            const lid = parts[1];
+                            if (lidPhone[lid]) continue;
+                            let phone = '';
+                            if (m.from && typeof m.from === 'string') {
+                                const match = m.from.match(/^(\\d+)@/);
+                                if (match && match[1] !== selfNum) phone = match[1];
+                            }
+                            if (!phone && m.to) {
+                                const toUser = typeof m.to === 'object' ? (m.to.user || '') :
+                                               (typeof m.to === 'string' ? m.to.split('@')[0] : '');
+                                if (/^\\d+$/.test(toUser) && toUser !== selfNum) phone = toUser;
+                            }
+                            if (phone) lidPhone[lid] = phone;
+                        }
+                        const tx2 = db.transaction('contact', 'readonly');
+                        const store2 = tx2.objectStore('contact');
+                        const all2 = await new Promise(r => {
+                            const req = store2.getAll();
+                            req.onsuccess = () => r(req.result);
+                        });
+                        for (const c of all2) {
+                            const name = c.name || c.pushname || '';
+                            if (!name || !c.id) continue;
+                            const phone = lidPhone[c.id];
+                            if (phone && !out[name]) out[name] = phone;
+                        }
+                    }
+
+                    return JSON.stringify(out);
+                }
+            """, SEU_NUMERO)
+            self.mapa_contatos = json.loads(raw)
+            self.ultimo_mapa = agora
+            print(f"  [mapa] {len(self.mapa_contatos)} contatos mapeados")
+        except Exception as e:
+            print(f"  [mapa] erro: {safe(str(e)[:80])}")
+
     async def detectar_chats(self):
+        await self._atualizar_mapa_contatos()
+        mapa_str = json.dumps(self.mapa_contatos)
         codigo = """
-            () => {
+            (mapaStr) => {
+                const mapa = JSON.parse(mapaStr);
                 const achados = [];
                 const side = document.querySelector('#side') ||
                              document.querySelector('[role="tabpanel"]');
@@ -118,12 +206,23 @@ class WhatsAppBot:
                             const nome = el ? el.getAttribute('title') : '';
                             if (nome && nome.length < 30 && nome !== 'Filtrar conversas' && !nome.startsWith('Filt')) {
                                 const spans = row.querySelectorAll('span[dir="auto"]');
-                                const texto = spans.length > 1 ? spans[spans.length - 1].textContent.trim() : '';
+                                let texto = '';
+                                const titulo = el ? el.getAttribute('title') : '';
+                                for (const sp of spans) {
+                                    if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {
+                                        texto = sp.textContent.trim();
+                                    }
+                                }
+                                if (!texto) return;
                                 if (texto.startsWith('default-')) return;
                                 const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
                                              row.querySelector('[aria-label*="nao lida"]') ||
                                              row.querySelector('[aria-label*="unread"]');
-                                achados.push({nome, texto, nao_lida: !!badge});
+                                let telefone = nome.replace(/\\D/g, '');
+                                if (!telefone || telefone.length < 10) {
+                                    telefone = mapa[nome] || '';
+                                }
+                                achados.push({nome, texto, nao_lida: !!badge, telefone});
                             }
                         });
                         return JSON.stringify(achados);
@@ -138,19 +237,31 @@ class WhatsAppBot:
                     if (!nome || nome.length > 30 || nome === 'Filtrar conversas' || nome.startsWith('Filt')) return;
 
                     const spans = chat.querySelectorAll('span[dir="auto"]');
-                    const texto = spans.length > 1 ? spans[spans.length - 1].textContent.trim() : '';
+                    let texto = '';
+                    const titulo = el ? el.getAttribute('title') : '';
+                    for (const sp of spans) {
+                        if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {
+                            texto = sp.textContent.trim();
+                        }
+                    }
+                    if (!texto) return;
                     if (texto.startsWith('default-')) return;
 
                     const badge = chat.querySelector('[data-testid="icon-unread-count"]') ||
                                  chat.querySelector('[aria-label*="nao lida"]') ||
                                  chat.querySelector('[aria-label*="unread"]');
 
-                    achados.push({nome, texto, nao_lida: !!badge});
+                    let telefone = nome.replace(/\\D/g, '');
+                    if (!telefone || telefone.length < 10) {
+                        telefone = mapa[nome] || '';
+                    }
+
+                    achados.push({nome, texto, nao_lida: !!badge, telefone});
                 });
                 return JSON.stringify(achados);
             }
         """
-        return await self.avaliar(codigo)
+        return await self.avaliar(codigo, mapa_str)
 
     async def escutar_mensagens(self):
         print("\n" + "="*50)
@@ -173,13 +284,13 @@ class WhatsAppBot:
                     nome = chat.get("nome", "")
                     texto = chat.get("texto", "")
                     nao_lida = chat.get("nao_lida", False)
+                    telefone = chat.get("telefone", "")
 
                     if not nome or not texto or nome == "DEBUG" or nome.startswith("Filt"):
                         continue
 
                     if c % 30 == 0 or nao_lida:
-                        tel_ext = re.sub(r'\D', '', nome)
-                        marca = f" [tel:{tel_ext}]" if tel_ext else ""
+                        marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
 
                     chave = f"{nome}|{texto}"
@@ -189,7 +300,7 @@ class WhatsAppBot:
 
                     if nao_lida:
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}")
-                        await self.processar_mensagem(nome, texto)
+                        await self.processar_mensagem(nome, texto, telefone)
 
                 await asyncio.sleep(3)
 
@@ -494,17 +605,18 @@ class WhatsAppBot:
                 await self.enviar_para_cliente(telefone,
                     f"Nao recebi retorno da {t['nome']} ainda. Assim que responder, aviso.")
 
-    async def processar_mensagem(self, remetente: str, msg_texto: str):
+    async def processar_mensagem(self, remetente: str, msg_texto: str, telefone: str = ""):
         if remetente in self.processando:
             return
         self.processando[remetente] = True
 
         try:
-            telefone = re.sub(r'\D', '', remetente)
-            if not telefone.startswith("55"):
-                telefone = "55" + telefone
-            if len(telefone) < 12:
-                telefone = "55" + re.sub(r'\D', '', remetente)
+            if not telefone:
+                telefone = re.sub(r'\D', '', remetente)
+                if not telefone.startswith("55"):
+                    telefone = "55" + telefone
+                if len(telefone) < 12:
+                    telefone = "55" + re.sub(r'\D', '', remetente)
 
             cliente_id = criar_cliente(telefone, nome=remetente)
             conversa = get_conversa_ativa(telefone)
