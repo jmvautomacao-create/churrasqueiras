@@ -5,14 +5,14 @@ import re
 from pathlib import Path
 from playwright.async_api import async_playwright
 
-from config import PRODUTOS, SEU_NUMERO, TRANSPORTADORAS, BASE_DIR
+from config import PRODUTOS, SEU_NUMERO, NUMERO_TESTE, TRANSPORTADORAS, BASE_DIR
 from database import (
     cliente_por_telefone, criar_cliente, criar_conversa, salvar_mensagem,
     atualizar_etapa_conversa, atualizar_produto_interesse, criar_cotacao,
     atualizar_cotacao, criar_venda, get_historico_conversa, get_conversa_ativa,
     atualizar_cliente,
 )
-from gemini_agent import gerar_resposta, extrair_comando, limpar_resposta
+from gemini_agent import gerar_resposta, resposta_fallback, extrair_comando, limpar_resposta
 from produtos import menu_interativo, submenu_produto, valor_produto, produto_por_id, detalhar
 
 
@@ -35,21 +35,16 @@ class WhatsAppBot:
         self.playwright = await async_playwright().start()
         user_data_dir = str(BASE_DIR / "data" / "whatsapp_session")
 
-        import shutil
         sessao_dir = Path(user_data_dir)
-        if sessao_dir.exists():
-            try:
-                shutil.rmtree(sessao_dir)
-                safe("Sessao anterior removida.")
-            except:
-                safe("Sessao anterior mantida.")
+        sessao_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Sessao: {user_data_dir}")
 
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir, headless=False,
         )
         self.page = await self.context.new_page()
         await self.page.goto("https://web.whatsapp.com")
-        print("Aguardando login... Escaneie o QR Code com o celular.")
+        print("Aguardando login. Se ja estiver logado, isso leva segundos.")
 
         for i in range(120):
             await asyncio.sleep(2)
@@ -122,9 +117,9 @@ class WhatsAppBot:
                             const el = row.querySelector('[title]');
                             const nome = el ? el.getAttribute('title') : '';
                             if (nome && nome.length < 30 && nome !== 'Filtrar conversas' && !nome.startsWith('Filt')) {
-                                const msg = row.querySelector('[data-testid="last-msg"]') ||
-                                            row.querySelector('span[dir="auto"]:last-child');
-                                const texto = msg ? msg.textContent.trim() : '';
+                                const spans = row.querySelectorAll('span[dir="auto"]');
+                                const texto = spans.length > 1 ? spans[spans.length - 1].textContent.trim() : '';
+                                if (texto.startsWith('default-')) return;
                                 const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
                                              row.querySelector('[aria-label*="nao lida"]') ||
                                              row.querySelector('[aria-label*="unread"]');
@@ -142,9 +137,9 @@ class WhatsAppBot:
                     const nome = el ? el.getAttribute('title') : '';
                     if (!nome || nome.length > 30 || nome === 'Filtrar conversas' || nome.startsWith('Filt')) return;
 
-                    const msg = chat.querySelector('[data-testid="last-msg"]') ||
-                                chat.querySelector('span[dir="auto"]:last-child');
-                    const texto = msg ? msg.textContent.trim() : '';
+                    const spans = chat.querySelectorAll('span[dir="auto"]');
+                    const texto = spans.length > 1 ? spans[spans.length - 1].textContent.trim() : '';
+                    if (texto.startsWith('default-')) return;
 
                     const badge = chat.querySelector('[data-testid="icon-unread-count"]') ||
                                  chat.querySelector('[aria-label*="nao lida"]') ||
@@ -171,13 +166,8 @@ class WhatsAppBot:
                 chats = json.loads(raw)
                 erros_consecutivos = 0
 
-                if c <= 3 or any(chat.get("nao_lida") for chat in chats):
-                    for chat in chats:
-                        nome = chat.get("nome", "")
-                        texto = chat.get("texto", "")
-                        nao_lida = chat.get("nao_lida", False)
-                        if nome and nome != "DEBUG":
-                            print(f"  [{c}] {safe(nome)}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:50])}")
+                if c % 30 == 0:
+                    print(f"  [{c}] heartbeat - escutando ({len(chats)} chats)")
 
                 for chat in chats:
                     nome = chat.get("nome", "")
@@ -187,13 +177,18 @@ class WhatsAppBot:
                     if not nome or not texto or nome == "DEBUG" or nome.startswith("Filt"):
                         continue
 
+                    if c % 30 == 0 or nao_lida:
+                        tel_ext = re.sub(r'\D', '', nome)
+                        marca = f" [tel:{tel_ext}]" if tel_ext else ""
+                        print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
+
                     chave = f"{nome}|{texto}"
                     if chave in self.vistos:
                         continue
                     self.vistos.add(chave)
 
                     if nao_lida:
-                        print(f"\n>>> NOVA MENSAGEM de {safe(nome)}: {safe(texto)}")
+                        print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}")
                         await self.processar_mensagem(nome, texto)
 
                 await asyncio.sleep(3)
@@ -615,8 +610,13 @@ class WhatsAppBot:
                     salvar_mensagem(conv_id, "agente", resp)
                     return
 
-            # --- CONVERSA LIVRE: usa Gemini ---
-            resposta = gerar_resposta(historico)
+            # --- CONVERSA LIVRE: usa Gemini ou fallback ---
+            try:
+                resposta = gerar_resposta(historico)
+            except Exception as e:
+                print(f"[GEMINI] {safe(e)}")
+                resposta = resposta_fallback(historico)
+
             comando = extrair_comando(resposta)
             resposta_limpa = limpar_resposta(resposta)
 

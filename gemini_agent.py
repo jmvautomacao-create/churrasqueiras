@@ -1,5 +1,6 @@
 import json
 from google import genai
+from google.genai import types
 from config import GEMINI_API_KEY, PRODUTOS
 
 cliente = genai.Client(api_key=GEMINI_API_KEY)
@@ -30,16 +31,41 @@ Você atua quando o cliente faz perguntas abertas (ex: "qual a diferença?", "é
 
 
 def gerar_resposta(historico: list[dict]) -> str:
-    messages = [{"role": "user" if m["origem"] == "cliente" else "model", "parts": [m["conteudo"]]} for m in historico]
+    from google.genai import types
 
-    response = cliente.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[
-            {"role": "user", "parts": [SISTEMA]},
-            *messages,
-        ],
+    contents = [types.Content(role="user", parts=[types.Part(text=SISTEMA)])]
+    for m in historico:
+        role = "user" if m["origem"] == "cliente" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part(text=m["conteudo"])]))
+
+    import time
+    for tentativa in range(2):
+        try:
+            response = cliente.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=contents,
+            )
+            return response.text.strip()
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                if tentativa == 0:
+                    print("[GEMINI] Quota excedida. Usando fallback.")
+                    time.sleep(5)
+                raise
+            elif tentativa < 1:
+                print(f"[GEMINI] Erro: {str(e)[:100]}. Usando fallback.")
+                time.sleep(2)
+                raise
+    raise Exception("Gemini unavailable")
+
+
+def resposta_fallback(historico: list[dict]) -> str:
+    from produtos import menu_interativo
+    return (
+        "Ola! Desculpe, estou com problemas de conexao no momento.\n\n"
+        "Enquanto isso, veja nosso catalogo:\n\n"
+        f"{menu_interativo()}"
     )
-    return response.text.strip()
 
 
 def extrair_comando(texto: str) -> dict | None:
