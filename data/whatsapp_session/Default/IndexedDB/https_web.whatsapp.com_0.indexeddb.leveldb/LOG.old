@@ -1,0 +1,18 @@
+2026/05/25-15:44:18.569 4d6c Reusing MANIFEST C:\Users\jean\Documents\Python\agente_churrasqueira\data\whatsapp_session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/05/25-15:44:18.569 4d6c Recovering log #159
+2026/05/25-15:44:18.603 4d6c Reusing old log C:\Users\jean\Documents\Python\agente_churrasqueira\data\whatsapp_session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000159.log 
+2026/05/25-15:44:28.228 5898 Level-0 table #167: started
+2026/05/25-15:44:28.268 5898 Level-0 table #167: 1085333 bytes OK
+2026/05/25-15:44:28.271 5898 Delete type=0 #159
+2026/05/25-15:44:28.280 5898 Compacting 1@1 + 4@2 files
+2026/05/25-15:44:28.380 5898 Generated table #168@1: 50365 keys, 2226362 bytes
+2026/05/25-15:44:28.457 5898 Generated table #169@1: 36493 keys, 2196675 bytes
+2026/05/25-15:44:28.521 5898 Generated table #170@1: 23485 keys, 2197449 bytes
+2026/05/25-15:44:28.579 5898 Generated table #171@1: 47316 keys, 1571338 bytes
+2026/05/25-15:44:28.579 5898 Compacted 1@1 + 4@2 files => 8191824 bytes
+2026/05/25-15:44:28.580 5898 compacted to: files[ 0 0 4 0 0 0 0 ]
+2026/05/25-15:44:28.581 5898 Delete type=2 #161
+2026/05/25-15:44:28.581 5898 Delete type=2 #162
+2026/05/25-15:44:28.581 5898 Delete type=2 #163
+2026/05/25-15:44:28.581 5898 Delete type=2 #164
+2026/05/25-15:44:28.581 5898 Delete type=2 #167
