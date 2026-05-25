@@ -129,12 +129,14 @@ class WhatsAppBot:
         except:
             pass
 
-    async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int):
+    async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int) -> bool:
         primeiro = f"[1] {PRODUTOS[0]['nome']}"
-        await self.enviar_para_cliente(telefone,
+        ok = await self.enviar_para_cliente(telefone,
             "Ola! Bem-vindo a JMV Churrasqueiras!\n"
             "Escolha um modelo digitando o NUMERO correspondente:\n\n"
             f"{primeiro}")
+        if not ok:
+            return False
         salvar_mensagem(conv_id, "agente", primeiro)
         self.apresentacao_menu[telefone] = {
             "conv_id": conv_id,
@@ -144,6 +146,7 @@ class WhatsAppBot:
             "todos_enviados": False,
         }
         atualizar_etapa_conversa(conv_id, "apresentacao_menu")
+        return True
 
     async def _avancar_apresentacao_menu(self, telefone: str, conv_id: int, estado: dict):
         if estado["proximo_idx"] > len(PRODUTOS):
@@ -152,7 +155,9 @@ class WhatsAppBot:
             return
         p = PRODUTOS[estado["proximo_idx"] - 1]
         item = f"[{estado['proximo_idx']}] {p['nome']}"
-        await self.enviar_para_cliente(telefone, item)
+        ok = await self.enviar_para_cliente(telefone, item)
+        if not ok:
+            return
         salvar_mensagem(conv_id, "agente", item)
         estado["apresentados"].append(estado["proximo_idx"])
         estado["proximo_idx"] += 1
@@ -186,7 +191,9 @@ class WhatsAppBot:
             await self.enviar_para_cliente(telefone, "Digite o numero da opcao desejada!")
             return
         item = SUB_ITENS[idx - 2]
-        await self.enviar_para_cliente(telefone, item)
+        ok = await self.enviar_para_cliente(telefone, item)
+        if not ok:
+            return
         salvar_mensagem(conv_id, "agente", item)
         estado["apresentados"].append(idx)
         estado["proximo_idx"] = idx + 1
@@ -391,8 +398,8 @@ class WhatsAppBot:
                 chats = json.loads(raw)
                 erros_consecutivos = 0
 
-                if c % 30 == 0:
-                    print(f"  [{c}] heartbeat - escutando ({len(chats)} chats)")
+                if c % 10 == 0:
+                    print(f"  [{c}] heartbeat - {len(chats)} chats, {len(self.apresentacao_menu)} menu, {len(self.apresentacao_submenu)} submenu")
 
                 for chat in chats:
                     nome = chat.get("nome", "")
@@ -417,13 +424,29 @@ class WhatsAppBot:
                         await self.processar_mensagem(nome, texto, telefone)
 
                 for tel, est in list(self.apresentacao_menu.items()):
-                    if time.time() - est["ultimo_envio"] > 8:
+                    if est.get("todos_enviados") or est.get("enviando"):
+                        continue
+                    est["enviando"] = True
+                    try:
                         await self._avancar_apresentacao_menu(tel, est["conv_id"], est)
+                    except Exception as e:
+                        print(f"  [AVANCO menu] {safe(e)}")
+                        self.apresentacao_menu.pop(tel, None)
+                    finally:
+                        est.pop("enviando", None)
                 for tel, est in list(self.apresentacao_submenu.items()):
-                    if time.time() - est["ultimo_envio"] > 8:
+                    if est.get("todos_enviados") or est.get("enviando"):
+                        continue
+                    est["enviando"] = True
+                    try:
                         await self._avancar_apresentacao_submenu(tel, est["conv_id"], est)
+                    except Exception as e:
+                        print(f"  [AVANCO submenu] {safe(e)}")
+                        self.apresentacao_submenu.pop(tel, None)
+                    finally:
+                        est.pop("enviando", None)
 
-                await asyncio.sleep(3)
+                await asyncio.sleep(1.5)
 
             except asyncio.CancelledError:
                 break
@@ -470,21 +493,25 @@ class WhatsAppBot:
         return None
 
     async def _digitar(self, texto: str):
-        caixa = await self._aguardar_input()
-        if not caixa:
-            print("[AVISO] Input nao encontrado para digitar")
-            return False
         try:
-            await caixa.fill("")
-            await caixa.type(texto, delay=30)
+            caixa = await self.page.query_selector('[contenteditable="true"]')
+            if caixa:
+                await caixa.evaluate("el => { el.focus(); el.textContent = ''; }")
+            for c in texto:
+                await self.page.keyboard.type(c)
+                await asyncio.sleep(0.005)
             return True
         except Exception:
+            await asyncio.sleep(1)
             try:
-                await caixa.evaluate("el => { el.focus(); el.textContent = ''; }")
-                await caixa.type(texto, delay=30)
+                caixa = await self.page.query_selector('[contenteditable="true"]')
+                if caixa:
+                    await caixa.evaluate("el => { el.focus(); el.textContent = ''; }")
+                for c in texto:
+                    await self.page.keyboard.type(c)
+                    await asyncio.sleep(0.005)
                 return True
-            except Exception as e:
-                print(f"[AVISO] Falha ao digitar: {safe(e)}")
+            except Exception:
                 return False
 
     async def _clicar_enviar(self, max_tentativas=30, usar_enter=False):
@@ -538,30 +565,38 @@ class WhatsAppBot:
             await asyncio.sleep(0.5)
         return False
 
-    async def enviar_texto(self, numero: str, texto: str):
+    async def enviar_texto(self, numero: str, texto: str) -> bool:
         try:
             url = f"https://web.whatsapp.com/send?phone={numero}"
-            await self.page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(3)
+            tem_input = await self.page.query_selector('[data-testid="conversation-compose-box-input"]')
+            if not tem_input or numero not in self.page.url:
+                await self.page.goto(url, wait_until="domcontentloaded")
+                await asyncio.sleep(3)
 
-            if await self._digitar(texto):
+            ok_dig = await self._digitar(texto)
+            if ok_dig:
                 print("  Texto digitado")
             await asyncio.sleep(1)
 
             if await self._clicar_enviar():
                 print(f"  -> Enviado para {numero}")
-                await asyncio.sleep(2)
-                return
+                await asyncio.sleep(1)
+                return True
 
             print(f"  -> Falha ao enviar para {numero}")
+            return False
         except Exception as e:
             print(f"[ERRO ENVIO] {safe(e)}")
+            return False
 
     async def enviar_midia(self, numero: str, caminho: str, legenda: str = ""):
         try:
             url = f"https://web.whatsapp.com/send?phone={numero}"
-            await self.page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(5)
+            url_atual = self.page.url.split("?")[0] if "?" in self.page.url else self.page.url
+            url_alvo = url.split("?")[0]
+            if url_atual != url_alvo or numero not in self.page.url:
+                await self.page.goto(url, wait_until="domcontentloaded")
+                await asyncio.sleep(5)
 
             clicou = await self._enviar_com_evaluate("""
                 () => {
@@ -605,8 +640,8 @@ class WhatsAppBot:
         except Exception as e:
             print(f"[ERRO MIDIA] {safe(e)}")
 
-    async def enviar_para_cliente(self, numero: str, texto: str):
-        await self.enviar_texto(numero, texto)
+    async def enviar_para_cliente(self, numero: str, texto: str) -> bool:
+        return await self.enviar_texto(numero, texto)
 
     async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = ""):
         await self.enviar_midia(numero, caminho, legenda)
@@ -752,9 +787,12 @@ class WhatsAppBot:
 
             # Primeira mensagem do cliente: inicia apresentacao progressiva
             if not msg_texto or len(historico) <= 1:
-                await self._iniciar_apresentacao_menu(telefone, conv_id)
+                ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
                 self.processando.pop(remetente, None)
-                print(f"  -> Apresentacao iniciada para {safe(remetente)}")
+                if ok:
+                    print(f"  -> Apresentacao iniciada para {safe(remetente)}")
+                else:
+                    print(f"  -> Falha ao enviar menu para {safe(remetente)}")
                 return
 
             etapa = (conversa or {}).get("etapa", "")
