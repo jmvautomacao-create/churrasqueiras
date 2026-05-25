@@ -89,21 +89,25 @@ class WhatsAppBot:
             if "context" in msg or "navigation" in msg or "target closed" in msg:
                 print(f"  -> Pagina perdida durante evaluate: {safe(str(e)[:60])}")
                 await self._recuperar_pagina()
+                return None
             raise
 
     async def _recuperar_pagina(self):
         print("  -> Recuperando pagina...")
         await asyncio.sleep(2)
         try:
-            if self.page and not self.page.is_closed():
-                try:
-                    await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=30000)
-                except:
-                    pass
-        except:
-            pass
+            if not self.page or self.page.is_closed():
+                self.page = await self.context.new_page()
+            await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            print(f"  -> Erro na recuperacao: {safe(str(e)[:60])}")
+            try:
+                self.page = await self.context.new_page()
+                await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=30000)
+            except:
+                pass
         await asyncio.sleep(5)
-        print("  -> Pagina recuperada (ou nova aba criada).")
+        print("  -> Pagina recuperada.")
 
     async def _atualizar_mapa_contatos(self):
         agora = time.time()
@@ -626,11 +630,12 @@ class WhatsAppBot:
             else:
                 conv_id = conversa["conversa_id"]
 
-            salvar_mensagem(conv_id, "cliente", msg_texto)
+            if msg_texto:
+                salvar_mensagem(conv_id, "cliente", msg_texto)
             historico = get_historico_conversa(conv_id, limite=30)
 
             # Primeira mensagem do cliente: envia menu principal
-            if len(historico) <= 1:
+            if not msg_texto or len(historico) <= 1:
                 resposta = menu_interativo()
                 await self.enviar_para_cliente(telefone, resposta)
                 salvar_mensagem(conv_id, "agente", resposta)

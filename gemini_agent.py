@@ -38,25 +38,11 @@ def gerar_resposta(historico: list[dict]) -> str:
         role = "user" if m["origem"] == "cliente" else "model"
         contents.append(types.Content(role=role, parts=[types.Part(text=m["conteudo"])]))
 
-    import time
-    for tentativa in range(2):
-        try:
-            response = cliente.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=contents,
-            )
-            return response.text.strip()
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                if tentativa == 0:
-                    print("[GEMINI] Quota excedida. Usando fallback.")
-                    time.sleep(5)
-                raise
-            elif tentativa < 1:
-                print(f"[GEMINI] Erro: {str(e)[:100]}. Usando fallback.")
-                time.sleep(2)
-                raise
-    raise Exception("Gemini unavailable")
+    response = cliente.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=contents,
+    )
+    return response.text.strip()
 
 
 def resposta_fallback(historico: list[dict]) -> str:
