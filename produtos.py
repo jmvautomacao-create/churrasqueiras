@@ -17,7 +17,6 @@ def catalogar() -> str:
     linhas = ["CATALOGO DE CHURRASQUEIRAS\n"]
     for p in PRODUTOS:
         linhas.append(f"{p['id']}. {p['nome']}")
-        linhas.append(f"   Preco: R$ {p['preco']:.2f}")
         linhas.append(f"   {p['descricao']}")
         linhas.append("")
     return "\n".join(linhas)
@@ -45,7 +44,30 @@ def menu_interativo() -> str:
     ]
     for p in PRODUTOS:
         linhas.append(f"  [{p['id']}] {p['nome']}")
-        linhas.append(f"       R$ {p['preco']:.2f}")
     linhas.append("")
-    linhas.append("Digite o numero do produto para ver detalhes e fotos!")
+    linhas.append("Digite o numero do produto para ver as opcoes!")
     return "\n".join(linhas)
+
+
+def submenu_produto(produto: dict) -> str:
+    return (
+        f"Voce escolheu: {produto['nome']}\n"
+        f"{produto['descricao']}\n\n"
+        f"Escolha uma opcao:\n"
+        f"  [1] Folder - Ver folder do produto\n"
+        f"  [2] Valor - Consultar preco\n"
+        f"  [3] Foto - Enviar foto\n"
+        f"  [4] Video - Enviar video\n"
+        f"  [5] Frete - Solicitar cotacao de frete\n\n"
+        f"Digite o numero da opcao desejada."
+    )
+
+
+def valor_produto(produto: dict) -> str:
+    return (
+        f"{produto['nome']}\n"
+        f"Preco: R$ {produto['preco']:.2f}\n\n"
+        f"Dimensoes: {produto['medidas']}\n"
+        f"Peso: {produto['peso']}\n\n"
+        f"Volte ao menu digitando o numero do produto ou escolha: Folder, Foto, Video, Frete."
+    )

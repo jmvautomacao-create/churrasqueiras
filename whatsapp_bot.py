@@ -13,7 +13,7 @@ from database import (
     atualizar_cliente,
 )
 from gemini_agent import gerar_resposta, extrair_comando, limpar_resposta
-from produtos import menu_interativo, produto_por_id, detalhar
+from produtos import menu_interativo, submenu_produto, valor_produto, produto_por_id, detalhar
 
 
 def safe(texto):
@@ -414,6 +414,91 @@ class WhatsAppBot:
                     return chat["texto"]
         return None
 
+    async def _enviar_folder(self, conv_id: int, telefone: str, produto: dict):
+        md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
+        folder = md / "folder.jpg"
+        if folder.exists():
+            await self.enviar_midia_para_cliente(telefone, folder, produto["nome"])
+            salvar_mensagem(conv_id, "agente", "[folder.jpg]", "foto")
+        else:
+            await self.enviar_para_cliente(telefone, "Folder nao disponivel para este produto.")
+            salvar_mensagem(conv_id, "agente", "Folder nao disponivel.")
+
+    async def _enviar_foto(self, conv_id: int, telefone: str, produto: dict):
+        md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
+        fotos = sorted([f for f in md.glob("*") if f.suffix.lower() in (".jpg", ".jpeg", ".png")])
+        if fotos:
+            await self.enviar_midia_para_cliente(telefone, fotos[0], produto["nome"])
+            salvar_mensagem(conv_id, "agente", f"[foto: {fotos[0].name}]", "foto")
+        else:
+            await self.enviar_para_cliente(telefone, "Foto nao disponivel para este produto.")
+
+    async def _enviar_video(self, conv_id: int, telefone: str, produto: dict):
+        md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
+        videos = [f for f in md.glob("*") if f.suffix.lower() in (".mp4", ".mov")]
+        if videos:
+            await self.enviar_midia_para_cliente(telefone, videos[0], produto["nome"])
+            salvar_mensagem(conv_id, "agente", f"[video: {videos[0].name}]", "video")
+        else:
+            await self.enviar_para_cliente(telefone, "Video nao disponivel para este produto.")
+
+    def _parse_endereco(self, endereco: str) -> dict:
+        info = {"endereco": endereco}
+        cep_match = re.search(r"(\d{5}-?\d{3})", endereco)
+        if cep_match:
+            info["cep"] = cep_match.group(1)
+        uf_match = re.search(r"\b([A-Za-z]{2})\b", endereco.split(",")[-1] if "," in endereco else endereco)
+        if uf_match:
+            info["estado"] = uf_match.group(1).upper()
+        partes = endereco.replace(",", " ").split()
+        for i, p in enumerate(partes):
+            if p.upper() in ("SP", "RJ", "MG", "RS", "PR", "SC", "BA", "DF", "GO", "MT", "MS",
+                             "ES", "CE", "RN", "PE", "PB", "AL", "SE", "PI", "MA", "PA", "AM",
+                             "AC", "RO", "RR", "AP", "TO"):
+                info["estado"] = p.upper()
+                if i > 0:
+                    info["cidade"] = partes[i - 1].strip()
+                break
+        return info
+
+    async def _executar_frete(self, conv_id: int, cliente_id: int, telefone: str):
+        cliente = cliente_por_telefone(telefone)
+        if not cliente:
+            await self.enviar_para_cliente(telefone, "Erro ao recuperar seus dados.")
+            return
+        conversa = get_conversa_ativa(telefone)
+        produto_id = (conversa or {}).get("produto_interesse_id")
+        if not produto_id:
+            await self.enviar_para_cliente(telefone, "Produto nao identificado. Escolha um produto primeiro.")
+            return
+        produto = produto_por_id(produto_id)
+        if not produto:
+            await self.enviar_para_cliente(telefone, "Produto nao encontrado.")
+            return
+
+        ci = {
+            "endereco": cliente.get("endereco", ""),
+            "cidade": cliente.get("cidade", ""),
+            "cep": cliente.get("cep", ""),
+            "estado": cliente.get("estado", ""),
+        }
+        await self.enviar_para_cliente(telefone, "Consultando frete...")
+        for t in TRANSPORTADORAS:
+            cot_id = criar_cotacao(conv_id, t["nome"])
+            await self.solicitar_frete_transportadora(t, produto, ci)
+            resp = await self.aguardar_resposta_transportadora(t["nome"], 180)
+            if resp:
+                v = self.extrair_valor_frete(resp)
+                pz = self.extrair_prazo(resp)
+                atualizar_cotacao(cot_id, valor_frete=v, prazo=pz, status="recebida")
+                await self.enviar_para_cliente(telefone,
+                    f"Frete {t['nome']}: R$ {v:.2f} ({pz or 'a confirmar'})\n"
+                    f"Total: R$ {produto['preco'] + v:.2f}\nDeseja confirmar?")
+            else:
+                atualizar_cotacao(cot_id, status="sem_resposta")
+                await self.enviar_para_cliente(telefone,
+                    f"Nao recebi retorno da {t['nome']} ainda. Assim que responder, aviso.")
+
     async def processar_mensagem(self, remetente: str, msg_texto: str):
         if remetente in self.processando:
             return
@@ -436,6 +521,7 @@ class WhatsAppBot:
             salvar_mensagem(conv_id, "cliente", msg_texto)
             historico = get_historico_conversa(conv_id, limite=30)
 
+            # Primeira mensagem do cliente: envia menu principal
             if len(historico) <= 1:
                 resposta = menu_interativo()
                 await self.enviar_para_cliente(telefone, resposta)
@@ -443,22 +529,93 @@ class WhatsAppBot:
                 print(f"  -> Menu enviado para {safe(remetente)}")
                 return
 
+            etapa = (conversa or {}).get("etapa", "")
+
+            # --- FLUXO DE FRETE: coleta de dados ---
+            if etapa == "frete_nome":
+                atualizar_cliente(cliente_id, nome=msg_texto.strip())
+                atualizar_etapa_conversa(conv_id, "frete_cpf")
+                await self.enviar_para_cliente(telefone, "Obrigado! Agora informe seu CPF ou CNPJ:")
+                salvar_mensagem(conv_id, "agente", "Obrigado! Agora informe seu CPF ou CNPJ:")
+                return
+
+            if etapa == "frete_cpf":
+                atualizar_cliente(cliente_id, cpf=msg_texto.strip())
+                atualizar_etapa_conversa(conv_id, "frete_endereco")
+                await self.enviar_para_cliente(telefone, "Perfeito! Agora informe seu endereco completo com CEP (Rua, numero, bairro, cidade, estado, CEP):")
+                salvar_mensagem(conv_id, "agente", "Perfeito! Informe o endereco completo com CEP:")
+                return
+
+            if etapa.startswith("frete_endereco"):
+                endereco = msg_texto.strip()
+                cliente_info = self._parse_endereco(endereco)
+                atualizar_cliente(cliente_id, endereco=endereco, **{k: v for k, v in cliente_info.items() if v})
+                atualizar_etapa_conversa(conv_id, "menu_principal")
+                await self.enviar_para_cliente(telefone, "Obrigado! Vou consultar o frete com as transportadoras e ja volto.")
+                await self._executar_frete(conv_id, cliente_id, telefone)
+                return
+
+            # --- SUBMENU: se estiver visualizando um produto ---
+            if etapa.startswith("submenu_"):
+                produto_id = int(etapa.split("_")[1])
+                produto = produto_por_id(produto_id)
+                if produto:
+                    opt = msg_texto.strip().lower()
+                    opt_map = {"1": "folder", "folder": "folder",
+                               "2": "valor", "valor": "valor", "preco": "valor", "preço": "valor",
+                               "3": "foto", "foto": "foto", "fotografia": "foto",
+                               "4": "video", "video": "video", "vídeo": "video",
+                               "5": "frete", "frete": "frete", "cotacao": "frete", "cotaçao": "frete"}
+                    acao = opt_map.get(opt)
+
+                    if acao == "folder":
+                        await self._enviar_folder(conv_id, telefone, produto)
+                        resp = submenu_produto(produto)
+                        await self.enviar_para_cliente(telefone, resp)
+                        salvar_mensagem(conv_id, "agente", resp)
+                        return
+
+                    if acao == "valor":
+                        resp = valor_produto(produto) + "\n\n" + submenu_produto(produto)
+                        await self.enviar_para_cliente(telefone, resp)
+                        salvar_mensagem(conv_id, "agente", resp)
+                        return
+
+                    if acao == "foto":
+                        await self._enviar_foto(conv_id, telefone, produto)
+                        resp = submenu_produto(produto)
+                        await self.enviar_para_cliente(telefone, resp)
+                        salvar_mensagem(conv_id, "agente", resp)
+                        return
+
+                    if acao == "video":
+                        await self._enviar_video(conv_id, telefone, produto)
+                        resp = submenu_produto(produto)
+                        await self.enviar_para_cliente(telefone, resp)
+                        salvar_mensagem(conv_id, "agente", resp)
+                        return
+
+                    if acao == "frete":
+                        atualizar_etapa_conversa(conv_id, "frete_nome")
+                        atualizar_produto_interesse(conv_id, produto["id"])
+                        await self.enviar_para_cliente(telefone,
+                            f"Para solicitar o frete da {produto['nome']}, preciso de alguns dados.\n\n"
+                            f"Primeiro, informe seu NOME completo:")
+                        salvar_mensagem(conv_id, "agente", "Solicitando dados para frete - informe o nome:")
+                        return
+
+            # --- SELECAO DE PRODUTO: numero 1-8 -> submenu ---
             if msg_texto.strip().isdigit():
                 produto = produto_por_id(int(msg_texto.strip()))
                 if produto:
-                    resp = (
-                        f"Voce escolheu: {produto['nome']}\n\n"
-                        f"{detalhar(produto['id'])}\n\n"
-                        f"Quer que eu envie a foto?"
-                    )
+                    atualizar_produto_interesse(conv_id, produto["id"])
+                    atualizar_etapa_conversa(conv_id, f"submenu_{produto['id']}")
+                    resp = submenu_produto(produto)
                     await self.enviar_para_cliente(telefone, resp)
                     salvar_mensagem(conv_id, "agente", resp)
-                    atualizar_produto_interesse(conv_id, produto["id"])
-                    cmd = extrair_comando(f"[ENVIAR_MIDIA:{produto['id']}:foto]")
-                    if cmd:
-                        await self.executar_comando(cmd, conv_id, cliente_id, telefone, remetente)
                     return
 
+            # --- CONVERSA LIVRE: usa Gemini ---
             resposta = gerar_resposta(historico)
             comando = extrair_comando(resposta)
             resposta_limpa = limpar_resposta(resposta)
@@ -481,44 +638,16 @@ class WhatsAppBot:
         if acao == "enviar_midia":
             produto = next((p for p in PRODUTOS if p["id"] == comando["produto_id"]), None)
             if produto:
-                md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
                 if comando["tipo"] == "foto":
-                    folder = md / "folder.jpg"
-                    if folder.exists():
-                        await self.enviar_midia_para_cliente(telefone, folder, produto["nome"])
-                        salvar_mensagem(conv_id, "agente", "[folder.jpg]", "foto")
-                        await asyncio.sleep(1)
-                    fotos = sorted([f for f in md.glob("*") if f.suffix.lower() in (".jpg", ".jpeg", ".png") and f.name != "folder.jpg"])
-                    if fotos:
-                        await self.enviar_midia_para_cliente(telefone, fotos[0], produto["nome"])
-                        salvar_mensagem(conv_id, "agente", f"[{fotos[0].name}]", "foto")
+                    await self._enviar_foto(conv_id, telefone, produto)
                 elif comando["tipo"] == "video":
-                    videos = [f for f in md.glob("*") if f.suffix.lower() in (".mp4", ".mov")]
-                    if videos:
-                        await self.enviar_midia_para_cliente(telefone, videos[0], produto["nome"])
-                        salvar_mensagem(conv_id, "agente", f"[{videos[0].name}]", "video")
+                    await self._enviar_video(conv_id, telefone, produto)
+                elif comando["tipo"] == "folder":
+                    await self._enviar_folder(conv_id, telefone, produto)
                 atualizar_produto_interesse(conv_id, produto["id"])
 
         elif acao == "solicitar_frete":
-            produto = next((p for p in PRODUTOS if p["id"] == comando["produto_id"]), None)
-            if not produto:
-                return
-            ci = {"cidade": comando["cidade"], "estado": comando["estado"], "cep": comando["cep"]}
-            atualizar_cliente(cliente_id, **ci)
-            await self.enviar_para_cliente(telefone, "Consultando frete...")
-            for t in TRANSPORTADORAS:
-                cot_id = criar_cotacao(conv_id, t["nome"])
-                await self.solicitar_frete_transportadora(t, produto, ci)
-                resp = await self.aguardar_resposta_transportadora(t["nome"], 180)
-                if resp:
-                    v = self.extrair_valor_frete(resp)
-                    pz = self.extrair_prazo(resp)
-                    atualizar_cotacao(cot_id, valor_frete=v, prazo=pz, status="recebida")
-                    await self.enviar_para_cliente(telefone,
-                        f"Frete {t['nome']}: R$ {v:.2f} ({pz or 'a confirmar'})\n"
-                        f"Total: R$ {produto['preco'] + v:.2f}\nDeseja confirmar?")
-                else:
-                    atualizar_cotacao(cot_id, status="sem_resposta")
+            await self._executar_frete(conv_id, cliente_id, telefone)
 
         elif acao == "venda_confirmada":
             produto = next((p for p in PRODUTOS if p["id"] == comando["produto_id"]), None)
