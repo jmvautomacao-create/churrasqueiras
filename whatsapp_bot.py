@@ -213,7 +213,6 @@ class WhatsAppBot:
                                         texto = sp.textContent.trim();
                                     }
                                 }
-                                if (!texto) return;
                                 if (texto.startsWith('default-')) return;
                                 const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
                                              row.querySelector('[aria-label*="nao lida"]') ||
@@ -222,6 +221,7 @@ class WhatsAppBot:
                                 if (!telefone || telefone.length < 10) {
                                     telefone = mapa[nome] || '';
                                 }
+                                if (!texto && !telefone) return;
                                 achados.push({nome, texto, nao_lida: !!badge, telefone});
                             }
                         });
@@ -244,7 +244,6 @@ class WhatsAppBot:
                             texto = sp.textContent.trim();
                         }
                     }
-                    if (!texto) return;
                     if (texto.startsWith('default-')) return;
 
                     const badge = chat.querySelector('[data-testid="icon-unread-count"]') ||
@@ -255,6 +254,8 @@ class WhatsAppBot:
                     if (!telefone || telefone.length < 10) {
                         telefone = mapa[nome] || '';
                     }
+
+                    if (!texto && !telefone) return;
 
                     achados.push({nome, texto, nao_lida: !!badge, telefone});
                 });
@@ -286,7 +287,7 @@ class WhatsAppBot:
                     nao_lida = chat.get("nao_lida", False)
                     telefone = chat.get("telefone", "")
 
-                    if not nome or not texto or nome == "DEBUG" or nome.startswith("Filt"):
+                    if not nome or nome == "DEBUG" or nome.startswith("Filt"):
                         continue
 
                     if c % 30 == 0 or nao_lida:
