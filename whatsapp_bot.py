@@ -13,7 +13,7 @@ from database import (
     atualizar_cliente,
 )
 from gemini_agent import gerar_resposta, resposta_fallback, extrair_comando, limpar_resposta
-from produtos import menu_interativo, submenu_produto, valor_produto, produto_por_id, detalhar
+from produtos import valor_produto, produto_por_id, detalhar
 
 
 def safe(texto):
@@ -32,6 +32,8 @@ class WhatsAppBot:
         self.processando = {}
         self.mapa_contatos = {}
         self.ultimo_mapa = 0
+        self.apresentacao_menu: dict[str, dict] = {}
+        self.apresentacao_submenu: dict[str, dict] = {}
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -120,12 +122,100 @@ class WhatsAppBot:
     async def _garantir_pagina_principal(self):
         try:
             url = self.page.url
-            if "send?phone=" in url or "/accept" in url:
-                print("  -> Voltando para pagina principal...")
+            if "web.whatsapp.com" not in url:
+                print("  -> Fora do WhatsApp, navegando...")
                 await self.page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(3)
         except:
             pass
+
+    async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int):
+        primeiro = f"[1] {PRODUTOS[0]['nome']}"
+        await self.enviar_para_cliente(telefone,
+            "Ola! Bem-vindo a JMV Churrasqueiras!\n"
+            "Escolha um modelo digitando o NUMERO correspondente:\n\n"
+            f"{primeiro}")
+        salvar_mensagem(conv_id, "agente", primeiro)
+        self.apresentacao_menu[telefone] = {
+            "conv_id": conv_id,
+            "proximo_idx": 2,
+            "apresentados": [1],
+            "ultimo_envio": time.time(),
+            "todos_enviados": False,
+        }
+        atualizar_etapa_conversa(conv_id, "apresentacao_menu")
+
+    async def _avancar_apresentacao_menu(self, telefone: str, conv_id: int, estado: dict):
+        if estado["proximo_idx"] > len(PRODUTOS):
+            estado["todos_enviados"] = True
+            await self.enviar_para_cliente(telefone, "Digite o numero do produto que deseja!")
+            return
+        p = PRODUTOS[estado["proximo_idx"] - 1]
+        item = f"[{estado['proximo_idx']}] {p['nome']}"
+        await self.enviar_para_cliente(telefone, item)
+        salvar_mensagem(conv_id, "agente", item)
+        estado["apresentados"].append(estado["proximo_idx"])
+        estado["proximo_idx"] += 1
+        estado["ultimo_envio"] = time.time()
+
+    async def _iniciar_apresentacao_submenu(self, telefone: str, conv_id: int, produto: dict):
+        self.apresentacao_submenu.pop(telefone, None)
+        primeiro = f"Voce escolheu: {produto['nome']}\n\n[1] Folder - Ver folder do produto"
+        await self.enviar_para_cliente(telefone, primeiro)
+        salvar_mensagem(conv_id, "agente", primeiro)
+        self.apresentacao_submenu[telefone] = {
+            "conv_id": conv_id,
+            "produto_id": produto["id"],
+            "proximo_idx": 2,
+            "apresentados": [1],
+            "ultimo_envio": time.time(),
+            "todos_enviados": False,
+        }
+        atualizar_etapa_conversa(conv_id, "apresentacao_submenu")
+
+    async def _avancar_apresentacao_submenu(self, telefone: str, conv_id: int, estado: dict):
+        SUB_ITENS = [
+            "[2] Valor - Consultar preco",
+            "[3] Foto - Enviar foto",
+            "[4] Video - Enviar video",
+            "[5] Frete - Solicitar cotacao de frete",
+        ]
+        idx = estado["proximo_idx"]
+        if idx > 5:
+            estado["todos_enviados"] = True
+            await self.enviar_para_cliente(telefone, "Digite o numero da opcao desejada!")
+            return
+        item = SUB_ITENS[idx - 2]
+        await self.enviar_para_cliente(telefone, item)
+        salvar_mensagem(conv_id, "agente", item)
+        estado["apresentados"].append(idx)
+        estado["proximo_idx"] = idx + 1
+        estado["ultimo_envio"] = time.time()
+
+    async def _executar_opcao_submenu(self, telefone: str, conv_id: int, produto_id: int, opt: int):
+        produto = produto_por_id(produto_id)
+        if not produto:
+            return
+        if opt == 1:
+            await self._enviar_folder(conv_id, telefone, produto)
+        elif opt == 2:
+            resp = valor_produto(produto)
+            await self.enviar_para_cliente(telefone, resp)
+            salvar_mensagem(conv_id, "agente", resp)
+        elif opt == 3:
+            await self._enviar_foto(conv_id, telefone, produto)
+        elif opt == 4:
+            await self._enviar_video(conv_id, telefone, produto)
+        elif opt == 5:
+            atualizar_produto_interesse(conv_id, produto["id"])
+            atualizar_etapa_conversa(conv_id, "frete_nome")
+            await self.enviar_para_cliente(telefone,
+                f"Para solicitar o frete da {produto['nome']}, preciso de alguns dados.\n\n"
+                f"Primeiro, informe seu NOME completo:")
+            salvar_mensagem(conv_id, "agente", "Solicitando dados para frete - informe o nome:")
+            return
+        self.processando[telefone] = True
+        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
 
     async def _atualizar_mapa_contatos(self):
         agora = time.time()
@@ -326,6 +416,13 @@ class WhatsAppBot:
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}")
                         await self.processar_mensagem(nome, texto, telefone)
 
+                for tel, est in list(self.apresentacao_menu.items()):
+                    if time.time() - est["ultimo_envio"] > 8:
+                        await self._avancar_apresentacao_menu(tel, est["conv_id"], est)
+                for tel, est in list(self.apresentacao_submenu.items()):
+                    if time.time() - est["ultimo_envio"] > 8:
+                        await self._avancar_apresentacao_submenu(tel, est["conv_id"], est)
+
                 await asyncio.sleep(3)
 
             except asyncio.CancelledError:
@@ -445,11 +542,11 @@ class WhatsAppBot:
         try:
             url = f"https://web.whatsapp.com/send?phone={numero}"
             await self.page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             if await self._digitar(texto):
                 print("  Texto digitado")
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
             if await self._clicar_enviar():
                 print(f"  -> Enviado para {numero}")
@@ -653,12 +750,11 @@ class WhatsAppBot:
                 salvar_mensagem(conv_id, "cliente", msg_texto)
             historico = get_historico_conversa(conv_id, limite=30)
 
-            # Primeira mensagem do cliente: envia menu principal
+            # Primeira mensagem do cliente: inicia apresentacao progressiva
             if not msg_texto or len(historico) <= 1:
-                resposta = menu_interativo()
-                await self.enviar_para_cliente(telefone, resposta)
-                salvar_mensagem(conv_id, "agente", resposta)
-                print(f"  -> Menu enviado para {safe(remetente)}")
+                await self._iniciar_apresentacao_menu(telefone, conv_id)
+                self.processando.pop(remetente, None)
+                print(f"  -> Apresentacao iniciada para {safe(remetente)}")
                 return
 
             etapa = (conversa or {}).get("etapa", "")
@@ -687,6 +783,49 @@ class WhatsAppBot:
                 await self._executar_frete(conv_id, cliente_id, telefone)
                 return
 
+            # --- APRESENTACAO PROGRESSIVA DO MENU ---
+            if etapa == "apresentacao_menu":
+                estado = self.apresentacao_menu.get(telefone)
+                if not estado:
+                    self.apresentacao_menu.pop(telefone, None)
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                else:
+                    if msg_texto.strip().isdigit():
+                        n = int(msg_texto.strip())
+                        if n in estado["apresentados"]:
+                            self.apresentacao_menu.pop(telefone, None)
+                            produto = produto_por_id(n)
+                            if produto:
+                                atualizar_produto_interesse(conv_id, produto["id"])
+                                self.processando.pop(remetente, None)
+                                await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
+                                return
+                        else:
+                            await self.enviar_para_cliente(telefone, f"Opção {n} ainda não foi apresentada. Aguarde as próximas opções.")
+                            return
+                    await self._avancar_apresentacao_menu(telefone, conv_id, estado)
+                    return
+
+            # --- APRESENTACAO PROGRESSIVA DO SUBMENU ---
+            if etapa == "apresentacao_submenu":
+                estado = self.apresentacao_submenu.get(telefone)
+                if not estado:
+                    self.apresentacao_submenu.pop(telefone, None)
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                else:
+                    if msg_texto.strip().isdigit():
+                        n = int(msg_texto.strip())
+                        if n in estado["apresentados"]:
+                            self.apresentacao_submenu.pop(telefone, None)
+                            self.processando.pop(remetente, None)
+                            await self._executar_opcao_submenu(telefone, conv_id, estado["produto_id"], n)
+                            return
+                        else:
+                            await self.enviar_para_cliente(telefone, f"Opção {n} ainda não foi apresentada. Aguarde...")
+                            return
+                    await self._avancar_apresentacao_submenu(telefone, conv_id, estado)
+                    return
+
             # --- SUBMENU: se estiver visualizando um produto ---
             if etapa.startswith("submenu_"):
                 produto_id = int(etapa.split("_")[1])
@@ -702,29 +841,28 @@ class WhatsAppBot:
 
                     if acao == "folder":
                         await self._enviar_folder(conv_id, telefone, produto)
-                        resp = submenu_produto(produto)
-                        await self.enviar_para_cliente(telefone, resp)
-                        salvar_mensagem(conv_id, "agente", resp)
+                        self.processando.pop(remetente, None)
+                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
                         return
 
                     if acao == "valor":
-                        resp = valor_produto(produto) + "\n\n" + submenu_produto(produto)
+                        resp = valor_produto(produto)
                         await self.enviar_para_cliente(telefone, resp)
                         salvar_mensagem(conv_id, "agente", resp)
+                        self.processando.pop(remetente, None)
+                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
                         return
 
                     if acao == "foto":
                         await self._enviar_foto(conv_id, telefone, produto)
-                        resp = submenu_produto(produto)
-                        await self.enviar_para_cliente(telefone, resp)
-                        salvar_mensagem(conv_id, "agente", resp)
+                        self.processando.pop(remetente, None)
+                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
                         return
 
                     if acao == "video":
                         await self._enviar_video(conv_id, telefone, produto)
-                        resp = submenu_produto(produto)
-                        await self.enviar_para_cliente(telefone, resp)
-                        salvar_mensagem(conv_id, "agente", resp)
+                        self.processando.pop(remetente, None)
+                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
                         return
 
                     if acao == "frete":
@@ -736,15 +874,13 @@ class WhatsAppBot:
                         salvar_mensagem(conv_id, "agente", "Solicitando dados para frete - informe o nome:")
                         return
 
-            # --- SELECAO DE PRODUTO: numero 1-8 -> submenu ---
+            # --- SELECAO DE PRODUTO: numero 1-8 -> submenu progressivo ---
             if msg_texto.strip().isdigit():
                 produto = produto_por_id(int(msg_texto.strip()))
                 if produto:
                     atualizar_produto_interesse(conv_id, produto["id"])
-                    atualizar_etapa_conversa(conv_id, f"submenu_{produto['id']}")
-                    resp = submenu_produto(produto)
-                    await self.enviar_para_cliente(telefone, resp)
-                    salvar_mensagem(conv_id, "agente", resp)
+                    self.processando.pop(remetente, None)
+                    await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
                     return
 
             # --- CONVERSA LIVRE: usa Gemini ou fallback ---
