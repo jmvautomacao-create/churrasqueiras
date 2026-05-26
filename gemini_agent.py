@@ -48,7 +48,7 @@ def gerar_resposta(historico: list[dict]) -> str:
 def resposta_fallback(historico: list[dict]) -> str:
     from produtos import menu_interativo
     return (
-        "Ola! Desculpe, estou com problemas de conexao no momento.\n\n"
+        "Desculpe, estou offline no momento.\n\n"
         "Enquanto isso, veja nosso catalogo:\n\n"
         f"{menu_interativo()}"
     )

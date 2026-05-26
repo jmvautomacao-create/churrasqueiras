@@ -3,9 +3,10 @@ import json
 import time
 import re
 from pathlib import Path
+from datetime import datetime
 from playwright.async_api import async_playwright
 
-from config import PRODUTOS, SEU_NUMERO, NUMERO_TESTE, TRANSPORTADORAS, BASE_DIR
+from config import PRODUTOS, SEU_NUMERO, NUMERO_TESTE, TRANSPORTADORAS, BASE_DIR, PASTA_SOLICITACOES
 from database import (
     cliente_por_telefone, criar_cliente, criar_conversa, salvar_mensagem,
     atualizar_etapa_conversa, atualizar_produto_interesse, criar_cotacao,
@@ -356,7 +357,7 @@ class WhatsAppBot:
                             const el = row.querySelector('[title]');
                             const nome = el ? el.getAttribute('title') : '';
                             if (nome && nome.length < 30 && nome !== 'Filtrar conversas' && !nome.startsWith('Filt')) {
-                                const spans = row.querySelectorAll('span[dir="auto"]');
+                                const spans = row.querySelectorAll('span[dir]');
                                 let texto = '';
                                 const titulo = el ? el.getAttribute('title') : '';
                                 for (const sp of spans) {
@@ -387,7 +388,7 @@ class WhatsAppBot:
                     const nome = el ? el.getAttribute('title') : '';
                     if (!nome || nome.length > 30 || nome === 'Filtrar conversas' || nome.startsWith('Filt')) return;
 
-                    const spans = chat.querySelectorAll('span[dir="auto"]');
+                    const spans = chat.querySelectorAll('span[dir]');
                     let texto = '';
                     const titulo = el ? el.getAttribute('title') : '';
                     for (const sp of spans) {
@@ -685,6 +686,12 @@ class WhatsAppBot:
                 return False
             if await self._clicar_enviar():
                 print(f"  -> Enviado para {numero}", flush=True)
+                if nome_sidebar:
+                    self.ultimo_texto_chat[nome_sidebar] = texto
+                else:
+                    for n in self.ultimo_texto_chat:
+                        if self.mapa_contatos.get(n) == numero:
+                            self.ultimo_texto_chat[n] = texto
                 return True
 
             print(f"  -> Falha ao enviar para {numero}", flush=True)
@@ -815,6 +822,9 @@ class WhatsAppBot:
 
             if await self._clicar_enviar(15, usar_enter=True):
                 print(f"  -> Midia enviada: {Path(caminho).name}")
+                nome_midia = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
+                if nome_midia:
+                    self.ultimo_texto_chat[nome_midia] = f"📷 {Path(caminho).name}"
                 await asyncio.sleep(1)
                 return
             print(f"  -> Falha ao enviar midia: {Path(caminho).name}")
@@ -890,19 +900,101 @@ class WhatsAppBot:
         cep_match = re.search(r"(\d{5}-?\d{3})", endereco)
         if cep_match:
             info["cep"] = cep_match.group(1)
-        uf_match = re.search(r"\b([A-Za-z]{2})\b", endereco.split(",")[-1] if "," in endereco else endereco)
-        if uf_match:
-            info["estado"] = uf_match.group(1).upper()
-        partes = endereco.replace(",", " ").split()
-        for i, p in enumerate(partes):
-            if p.upper() in ("SP", "RJ", "MG", "RS", "PR", "SC", "BA", "DF", "GO", "MT", "MS",
-                             "ES", "CE", "RN", "PE", "PB", "AL", "SE", "PI", "MA", "PA", "AM",
-                             "AC", "RO", "RR", "AP", "TO"):
-                info["estado"] = p.upper()
-                if i > 0:
-                    info["cidade"] = partes[i - 1].strip()
-                break
+        else:
+            ultimos_digitos = re.findall(r"\d+", endereco)
+            for seq in reversed(ultimos_digitos):
+                if len(seq) >= 5:
+                    info["cep"] = seq
+                    break
+
+        ufs = {"SP","RJ","MG","RS","PR","SC","BA","DF","GO","MT","MS",
+               "ES","CE","RN","PE","PB","AL","SE","PI","MA","PA","AM",
+               "AC","RO","RR","AP","TO"}
+
+        # Method 1: comma-separated (cidade/UF separados por virgula)
+        partes_virgula = [p.strip() for p in endereco.replace("\n", ",").split(",") if p.strip()]
+        if len(partes_virgula) >= 3:
+            for i, parte in enumerate(partes_virgula):
+                palavras = parte.split()
+                for p in palavras:
+                    if p.upper() in ufs:
+                        info["estado"] = p.upper()
+                        if i > 0:
+                            info["cidade"] = partes_virgula[i - 1]
+                        break
+                if "estado" in info:
+                    break
+
+        # Method 2: space-separated fallback (sem virgulas)
+        if "estado" not in info:
+            partes = endereco.replace(",", " ").split()
+            for i, p in enumerate(partes):
+                if p.upper() in ufs:
+                    info["estado"] = p.upper()
+                    palavras_cidade = []
+                    for j in range(i - 1, -1, -1):
+                        if not any(c.isdigit() for c in partes[j]):
+                            palavras_cidade.insert(0, partes[j])
+                        else:
+                            break
+                    if palavras_cidade:
+                        info["cidade"] = " ".join(palavras_cidade)
+                    break
         return info
+
+    def _salvar_solicitacao_frete(self, telefone, nome, cpf, endereco, cidade, estado, cep):
+        from openpyxl import Workbook
+        pasta = PASTA_SOLICITACOES
+        pasta.mkdir(exist_ok=True)
+        agora = datetime.now()
+        nome_limpo = re.sub(r"[^\w]", "", nome)[:20] or "cliente"
+        nome_arquivo = f"Solicitacao_Frete_{nome_limpo}_{agora.strftime('%d-%m-%Y')}_{agora.strftime('%H%M')}.xlsx"
+        caminho = pasta / nome_arquivo
+        cabecalhos = ["CAMPO", "VALOR"]
+        conversa = get_conversa_ativa(telefone)
+        produto_id = (conversa or {}).get("produto_interesse_id")
+        produto = produto_por_id(produto_id) if produto_id else None
+        dados = [
+            ("DATA/HORA", agora.strftime("%d/%m/%Y %H:%M")),
+            ("NOME", nome),
+            ("WHATSAPP", telefone),
+            ("CPF/CNPJ", cpf),
+            ("ENDERECO", endereco),
+            ("CIDADE", cidade),
+            ("ESTADO", estado),
+            ("CEP", cep),
+            ("PRODUTO", produto["nome"] if produto else "N/I"),
+            ("PRECO", f"R$ {produto['preco']:.2f}" if produto else "N/I"),
+            ("MEDIDAS", produto["medidas"] if produto else "N/I"),
+            ("PESO", produto["peso"] if produto else "N/I"),
+            ("VALOR DO FRETE", ""),
+            ("STATUS", "Pendente"),
+        ]
+        wb = Workbook()
+        ws = wb.active
+        ws.append(cabecalhos)
+        for campo, valor in dados:
+            ws.append([campo, valor])
+        wb.save(caminho)
+        print(f"  -> Solicitacao salva: {nome_arquivo}", flush=True)
+
+    async def _ler_msg_anterior_usuario(self):
+        raw = await self.avaliar("""
+            () => {
+                const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
+                if (!painel) return '';
+                const msgs = painel.querySelectorAll(':scope [data-testid*="msg"], :scope .message-in, :scope .message-out, :scope > div > div');
+                const usuarios = [];
+                for (const el of msgs) {
+                    if (el.querySelector('[data-testid="msg-author"]')) continue;
+                    const textEl = el.querySelector('span[dir="ltr"], span[dir="auto"]');
+                    if (textEl && textEl.textContent.trim()) usuarios.push(textEl.textContent.trim());
+                }
+                if (usuarios.length < 2) return '';
+                return usuarios[usuarios.length - 2];
+            }
+        """)
+        return raw.strip()
 
     async def _executar_frete(self, conv_id: int, cliente_id: int, telefone: str):
         cliente = cliente_por_telefone(telefone)
@@ -997,26 +1089,57 @@ class WhatsAppBot:
 
             # --- FLUXO DE FRETE: coleta de dados ---
             if etapa == "frete_nome":
-                atualizar_cliente(cliente_id, nome=msg_texto.strip())
+                nome = msg_texto.strip()
+                # Fallback: se o chat tiver uma msg anterior do usuario (sidebar perdeu), usa ela
+                msg_anterior = await self._ler_msg_anterior_usuario()
+                if msg_anterior and msg_anterior != nome:
+                    print(f"  [frete] sidebar perdeu '{safe(nome)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    nome = msg_anterior
+                atualizar_cliente(cliente_id, nome=nome)
                 atualizar_etapa_conversa(conv_id, "frete_cpf")
+                print(f"  [frete] nome salvo: {safe(nome)} -> etapa frete_cpf", flush=True)
                 await self.enviar_para_cliente(telefone, "Obrigado! Agora informe seu CPF ou CNPJ:")
                 salvar_mensagem(conv_id, "agente", "Obrigado! Agora informe seu CPF ou CNPJ:")
                 return
 
             if etapa == "frete_cpf":
-                atualizar_cliente(cliente_id, cpf=msg_texto.strip())
+                cpf = msg_texto.strip()
+                msg_anterior = await self._ler_msg_anterior_usuario()
+                if msg_anterior and msg_anterior != cpf:
+                    print(f"  [frete] sidebar perdeu '{safe(cpf)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    cpf = msg_anterior
+                atualizar_cliente(cliente_id, cpf=cpf)
                 atualizar_etapa_conversa(conv_id, "frete_endereco")
+                print(f"  [frete] cpf salvo: {safe(cpf)} -> etapa frete_endereco", flush=True)
                 await self.enviar_para_cliente(telefone, "Perfeito! Agora informe seu endereco completo com CEP (Rua, numero, bairro, cidade, estado, CEP):")
                 salvar_mensagem(conv_id, "agente", "Perfeito! Informe o endereco completo com CEP:")
                 return
 
             if etapa.startswith("frete_endereco"):
                 endereco = msg_texto.strip()
+                msg_anterior = await self._ler_msg_anterior_usuario()
+                if msg_anterior and msg_anterior != endereco:
+                    print(f"  [frete] sidebar perdeu '{safe(endereco)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    endereco = msg_anterior
                 cliente_info = self._parse_endereco(endereco)
-                atualizar_cliente(cliente_id, endereco=endereco, **{k: v for k, v in cliente_info.items() if v})
+                atualizar_cliente(cliente_id, **{k: v for k, v in cliente_info.items() if v})
                 atualizar_etapa_conversa(conv_id, "menu_principal")
-                await self.enviar_para_cliente(telefone, "Obrigado! Vou consultar o frete com as transportadoras e ja volto.")
-                await self._executar_frete(conv_id, cliente_id, telefone)
+                cliente_completo = cliente_por_telefone(telefone)
+                nome_cliente = cliente_completo.get("nome", "") if cliente_completo else ""
+                print(f"  [frete] endereco salvo -> enviando confirmacao + xlsx", flush=True)
+                await self.enviar_para_cliente(telefone,
+                    f"Obrigado, {nome_cliente}! Sua solicitacao de frete foi recebida com sucesso.\n"
+                    f"Em breve entraremos em contato com o orcamento.\n"
+                    f"Por favor, aguarde nosso retorno.")
+                self._salvar_solicitacao_frete(
+                    telefone,
+                    nome_cliente,
+                    cliente_completo.get("cpf", "") if cliente_completo else "",
+                    endereco,
+                    cliente_info.get("cidade", ""),
+                    cliente_info.get("estado", ""),
+                    cliente_info.get("cep", ""),
+                )
                 return
 
             # --- APRESENTACAO PROGRESSIVA DO MENU ---
@@ -1069,6 +1192,9 @@ class WhatsAppBot:
             # --- SUBMENU: perguntar se deseja continuar ---
             if etapa == "submenu_continuar":
                 opt = msg_texto.strip().lower()
+                # Ignore long text (bot's own messages), only short user responses
+                if len(opt.split()) > 3:
+                    return
                 ctx = self.continuar_submenu.pop(telefone, None)
                 if not ctx:
                     atualizar_etapa_conversa(conv_id, "menu_principal")
