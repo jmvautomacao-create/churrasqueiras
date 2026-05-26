@@ -246,10 +246,13 @@ class WhatsAppBot:
             if ok:
                 print(f"  -> Menu reiniciado para {safe(telefone)}", flush=True)
             return
+        chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
+        for k in chaves:
+            self.ultimo_visto_texto.pop(k, None)
         self.continuar_submenu[telefone] = {"conv_id": conv_id, "produto_id": produto_id, "nome_sidebar": nome_sidebar}
         atualizar_etapa_conversa(conv_id, "submenu_continuar")
         await self.enviar_para_cliente(telefone,
-            "Deseja mais alguma opcao?\n[1] SIM - Continuar neste produto\n[2] NAO - Voltar ao Menu Principal",
+            "Selecione uma Opcao abaixo:\n[1] Continuar neste produto\n[2] Voltar ao Menu Principal",
             nome_sidebar)
 
     async def _atualizar_mapa_contatos(self):
