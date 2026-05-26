@@ -36,6 +36,7 @@ class WhatsAppBot:
         self.ultimo_mapa = 0
         self.apresentacao_menu: dict[str, dict] = {}
         self.apresentacao_submenu: dict[str, dict] = {}
+        self.continuar_submenu: dict[str, dict] = {}
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -245,8 +246,11 @@ class WhatsAppBot:
             if ok:
                 print(f"  -> Menu reiniciado para {safe(telefone)}", flush=True)
             return
-        self.processando[telefone] = True
-        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
+        self.continuar_submenu[telefone] = {"conv_id": conv_id, "produto_id": produto_id, "nome_sidebar": nome_sidebar}
+        atualizar_etapa_conversa(conv_id, "submenu_continuar")
+        await self.enviar_para_cliente(telefone,
+            "Deseja mais alguma opcao?\n[1] SIM - Continuar neste produto\n[2] NAO - Voltar ao Menu Principal",
+            nome_sidebar)
 
     async def _atualizar_mapa_contatos(self):
         agora = time.time()
@@ -1059,6 +1063,26 @@ class WhatsAppBot:
                     await self._avancar_apresentacao_submenu(telefone, conv_id, estado)
                     return
 
+            # --- SUBMENU: perguntar se deseja continuar ---
+            if etapa == "submenu_continuar":
+                opt = msg_texto.strip().lower()
+                ctx = self.continuar_submenu.pop(telefone, None)
+                if not ctx:
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                    return
+                if opt in ("1", "sim"):
+                    produto = produto_por_id(ctx["produto_id"])
+                    if produto:
+                        self.processando.pop(remetente, None)
+                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
+                    return
+                self.apresentacao_submenu.pop(telefone, None)
+                await self.enviar_para_cliente(telefone, "Voltando ao Menu Principal...", ctx.get("nome_sidebar", ""))
+                ok = await self._iniciar_apresentacao_menu(telefone, conv_id, ctx.get("nome_sidebar", ""))
+                if ok:
+                    print(f"  -> Menu reiniciado para {safe(telefone)}", flush=True)
+                return
+
             # --- SUBMENU: se estiver visualizando um produto ---
             if etapa.startswith("submenu_"):
                 produto_id = int(etapa.split("_")[1])
@@ -1072,30 +1096,23 @@ class WhatsAppBot:
                                "5": "frete", "frete": "frete", "cotacao": "frete", "cotaçao": "frete"}
                     acao = opt_map.get(opt)
 
-                    if acao == "folder":
-                        await self._enviar_folder(conv_id, telefone, produto)
+                    if acao in ("folder", "valor", "foto", "video"):
+                        if acao == "folder":
+                            await self._enviar_folder(conv_id, telefone, produto)
+                        elif acao == "valor":
+                            resp = valor_produto(produto)
+                            await self.enviar_para_cliente(telefone, resp)
+                            salvar_mensagem(conv_id, "agente", resp)
+                        elif acao == "foto":
+                            await self._enviar_foto(conv_id, telefone, produto)
+                        elif acao == "video":
+                            await self._enviar_video(conv_id, telefone, produto)
                         self.processando.pop(remetente, None)
-                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
-                        return
-
-                    if acao == "valor":
-                        resp = valor_produto(produto)
-                        await self.enviar_para_cliente(telefone, resp)
-                        salvar_mensagem(conv_id, "agente", resp)
-                        self.processando.pop(remetente, None)
-                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
-                        return
-
-                    if acao == "foto":
-                        await self._enviar_foto(conv_id, telefone, produto)
-                        self.processando.pop(remetente, None)
-                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
-                        return
-
-                    if acao == "video":
-                        await self._enviar_video(conv_id, telefone, produto)
-                        self.processando.pop(remetente, None)
-                        await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
+                        self.continuar_submenu[telefone] = {"conv_id": conv_id, "produto_id": produto_id, "nome_sidebar": nome_sidebar}
+                        atualizar_etapa_conversa(conv_id, "submenu_continuar")
+                        await self.enviar_para_cliente(telefone,
+                            "Deseja mais alguma opcao?\n[1] SIM - Continuar neste produto\n[2] NAO - Voltar ao Menu Principal",
+                            nome_sidebar)
                         return
 
                     if acao == "frete":
