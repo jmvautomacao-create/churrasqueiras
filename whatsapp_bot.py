@@ -677,6 +677,8 @@ class WhatsAppBot:
         try:
             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
             if not tem_input:
+                if not nome_sidebar:
+                    nome_sidebar = next((n for n, t in self.mapa_contatos.items() if t == numero), "")
                 nomes = [nome_sidebar] if nome_sidebar else []
                 nomes += [n for n, t in self.mapa_contatos.items() if t == numero]
                 for nome in nomes:
@@ -700,14 +702,11 @@ class WhatsAppBot:
                 return False
             if await self._clicar_enviar():
                 print(f"  -> Enviado para {numero}", flush=True)
+                if not nome_sidebar:
+                    nome_sidebar = next((n for n, t in self.mapa_contatos.items() if t == numero), "")
                 if nome_sidebar:
                     self.ultimo_texto_chat[nome_sidebar] = texto
                     self.ultimo_envio[nome_sidebar] = time.time()
-                else:
-                    for n in self.ultimo_texto_chat:
-                        if self.mapa_contatos.get(n) == numero:
-                            self.ultimo_texto_chat[n] = texto
-                            self.ultimo_envio[n] = time.time()
                 return True
 
             print(f"  -> Falha ao enviar para {numero}", flush=True)
@@ -1302,7 +1301,7 @@ class WhatsAppBot:
             resposta_limpa = limpar_resposta(resposta)
 
             if resposta_limpa:
-                await self.enviar_para_cliente(telefone, resposta_limpa)
+                await self.enviar_para_cliente(telefone, resposta_limpa, nome_sidebar)
                 salvar_mensagem(conv_id, "agente", resposta_limpa)
             if comando:
                 await self.executar_comando(comando, conv_id, cliente_id, telefone, remetente)
