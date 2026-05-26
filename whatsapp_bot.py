@@ -33,6 +33,7 @@ class WhatsAppBot:
         self.ultimo_processamento: dict[str, float] = {}
         self.ultimo_texto_chat: dict[str, str] = {}
         self.ultimo_visto_texto: dict[str, float] = {}
+        self.ultimo_envio: dict[str, float] = {}
         self.mapa_contatos = {}
         self.ultimo_mapa = 0
         self.apresentacao_menu: dict[str, dict] = {}
@@ -472,6 +473,10 @@ class WhatsAppBot:
                         if agora - ultimo < 120:
                             continue
 
+                    # Pula se o bot acabou de enviar mensagem pra este chat
+                    if self.ultimo_envio.get(nome, 0) > agora - 10:
+                        continue
+
                     # Fallback: detectar por mudanca de texto (msgs sem badge)
                     ultimo_texto = self.ultimo_texto_chat.get(nome, "")
                     if texto and texto != ultimo_texto:
@@ -697,10 +702,12 @@ class WhatsAppBot:
                 print(f"  -> Enviado para {numero}", flush=True)
                 if nome_sidebar:
                     self.ultimo_texto_chat[nome_sidebar] = texto
+                    self.ultimo_envio[nome_sidebar] = time.time()
                 else:
                     for n in self.ultimo_texto_chat:
                         if self.mapa_contatos.get(n) == numero:
                             self.ultimo_texto_chat[n] = texto
+                            self.ultimo_envio[n] = time.time()
                 return True
 
             print(f"  -> Falha ao enviar para {numero}", flush=True)
