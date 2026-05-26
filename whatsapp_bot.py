@@ -29,7 +29,9 @@ class WhatsAppBot:
         self.playwright = None
         self.logado = False
         self.vistos = set()
-        self.processando = {}
+        self.processando: dict[str, bool] = {}
+        self.ultimo_processamento: dict[str, float] = {}
+        self.ultimo_texto_chat: dict[str, str] = {}
         self.mapa_contatos = {}
         self.ultimo_mapa = 0
         self.apresentacao_menu: dict[str, dict] = {}
@@ -401,6 +403,7 @@ class WhatsAppBot:
                 if c % 10 == 0:
                     print(f"  [{c}] heartbeat - {len(chats)} chats, {len(self.apresentacao_menu)} menu, {len(self.apresentacao_submenu)} submenu")
 
+                vistos_ciclo = set()
                 for chat in chats:
                     nome = chat.get("nome", "")
                     texto = chat.get("texto", "")
@@ -410,17 +413,36 @@ class WhatsAppBot:
                     if not nome or nome == "DEBUG" or nome.startswith("Filt"):
                         continue
 
+                    # Dedup intra-ciclo: chats duplicados (ex: role="row" aninhado)
+                    if nome in vistos_ciclo:
+                        continue
+                    vistos_ciclo.add(nome)
+
                     if c % 30 == 0 or nao_lida:
                         marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
 
-                    chave = f"{nome}|{texto}"
-                    if chave in self.vistos:
-                        continue
-                    self.vistos.add(chave)
+                    if texto:
+                        chave = f"{nome}|{texto}"
+                        if chave in self.vistos:
+                            continue
+                        self.vistos.add(chave)
+                    else:
+                        # Sem texto: dedup por tempo p/ nao perder msgs novas
+                        agora = time.time()
+                        ultimo = self.ultimo_processamento.get(nome, 0)
+                        if agora - ultimo < 8:
+                            continue
+                        self.ultimo_processamento[nome] = agora
+
+                    # Fallback: detectar por mudanca de texto (msgs sem badge)
+                    ultimo_texto = self.ultimo_texto_chat.get(nome, "")
+                    if texto and texto != ultimo_texto:
+                        self.ultimo_texto_chat[nome] = texto
+                        nao_lida = True
 
                     if nao_lida:
-                        print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}")
+                        print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
                         await self.processar_mensagem(nome, texto, telefone)
 
                 for tel, est in list(self.apresentacao_menu.items()):
@@ -483,35 +505,35 @@ class WhatsAppBot:
             await asyncio.sleep(0.5)
         return False
 
-    async def _aguardar_input(self, timeout=20):
+    SELETOR_INPUT = '#main [contenteditable="true"]'
+
+    async def _aguardar_input(self, timeout=8):
         for _ in range(timeout):
-            for sel in ['[contenteditable="true"]', 'div[role="textbox"]', 'div[aria-placeholder*="mensagem"]', 'div[aria-placeholder*="message"]']:
-                el = await self.page.query_selector(sel)
-                if el:
-                    return el
+            el = await self.page.query_selector(self.SELETOR_INPUT)
+            if el:
+                return el
             await asyncio.sleep(1)
         return None
 
     async def _digitar(self, texto: str):
+        caixa = await self._aguardar_input(8)
+        if not caixa:
+            print("  [DIG] Input nao encontrado apos 20s")
+            return False
         try:
-            caixa = await self.page.query_selector('[contenteditable="true"]')
-            if caixa:
-                await caixa.evaluate("el => { el.focus(); el.textContent = ''; }")
-            for c in texto:
-                await self.page.keyboard.type(c)
-                await asyncio.sleep(0.005)
+            await caixa.fill("")
+            await asyncio.sleep(0.3)
+            await caixa.fill(texto)
             return True
         except Exception:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             try:
-                caixa = await self.page.query_selector('[contenteditable="true"]')
-                if caixa:
-                    await caixa.evaluate("el => { el.focus(); el.textContent = ''; }")
-                for c in texto:
-                    await self.page.keyboard.type(c)
-                    await asyncio.sleep(0.005)
+                await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                await asyncio.sleep(0.3)
+                await self.page.keyboard.type(texto, delay=30)
                 return True
-            except Exception:
+            except Exception as e:
+                print(f"  [DIG] Falha ao digitar: {safe(str(e)[:60])}")
                 return False
 
     async def _clicar_enviar(self, max_tentativas=30, usar_enter=False):
@@ -565,38 +587,87 @@ class WhatsAppBot:
             await asyncio.sleep(0.5)
         return False
 
+    async def _abrir_chat_sidebar(self, nome: str) -> bool:
+        try:
+            await self.page.wait_for_selector('#side', timeout=10000)
+            await asyncio.sleep(0.5)
+            for _ in range(3):
+                ok = await self.avaliar(f"""
+                    () => {{
+                        const rows = document.querySelectorAll('#side [role="row"]');
+                        const alvo = {json.dumps(nome)};
+                        for (const row of rows) {{
+                            const el = row.querySelector('[title]');
+                            if (el && el.getAttribute('title') === alvo) {{
+                                row.click();
+                                return true;
+                            }}
+                        }}
+                        return false;
+                    }}
+                """)
+                if ok:
+                    await asyncio.sleep(1.5)
+                    return True
+                await asyncio.sleep(0.5)
+            return False
+        except Exception:
+            return False
     async def enviar_texto(self, numero: str, texto: str) -> bool:
         try:
-            url = f"https://web.whatsapp.com/send?phone={numero}"
-            tem_input = await self.page.query_selector('[data-testid="conversation-compose-box-input"]')
-            if not tem_input or numero not in self.page.url:
+            tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+            if not tem_input:
+                nome = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
+                if nome and await self._abrir_chat_sidebar(nome):
+                    await asyncio.sleep(1)
+                    tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+
+            if not tem_input:
+                url = f"https://web.whatsapp.com/send?phone={numero}"
                 await self.page.goto(url, wait_until="domcontentloaded")
-                await asyncio.sleep(3)
+                try:
+                    await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=30000)
+                except Exception:
+                    print(f"  -> Timeout aguardando input para {numero}", flush=True)
+                    return False
+                await asyncio.sleep(1)
 
             ok_dig = await self._digitar(texto)
-            if ok_dig:
-                print("  Texto digitado")
-            await asyncio.sleep(1)
+            if not ok_dig:
+                print(f"  -> Input nao disponivel para {numero}", flush=True)
+                return False
+            print("  Texto digitado", flush=True)
+            await asyncio.sleep(0.5)
 
             if await self._clicar_enviar():
-                print(f"  -> Enviado para {numero}")
+                print(f"  -> Enviado para {numero}", flush=True)
                 await asyncio.sleep(1)
                 return True
 
-            print(f"  -> Falha ao enviar para {numero}")
+            print(f"  -> Falha ao enviar para {numero}", flush=True)
             return False
         except Exception as e:
-            print(f"[ERRO ENVIO] {safe(e)}")
+            print(f"[ERRO ENVIO] {safe(e)}", flush=True)
             return False
 
     async def enviar_midia(self, numero: str, caminho: str, legenda: str = ""):
         try:
-            url = f"https://web.whatsapp.com/send?phone={numero}"
-            url_atual = self.page.url.split("?")[0] if "?" in self.page.url else self.page.url
-            url_alvo = url.split("?")[0]
-            if url_atual != url_alvo or numero not in self.page.url:
+            tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+            if not tem_input:
+                nome = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
+                if nome and await self._abrir_chat_sidebar(nome):
+                    await asyncio.sleep(1)
+                    tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+
+            if not tem_input:
+                url = f"https://web.whatsapp.com/send?phone={numero}"
                 await self.page.goto(url, wait_until="domcontentloaded")
-                await asyncio.sleep(5)
+                try:
+                    await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=30000)
+                except Exception:
+                    print(f"  -> Timeout aguardando input para midia {numero}")
+                    return
+                await asyncio.sleep(1)
 
             clicou = await self._enviar_com_evaluate("""
                 () => {
@@ -785,14 +856,26 @@ class WhatsAppBot:
                 salvar_mensagem(conv_id, "cliente", msg_texto)
             historico = get_historico_conversa(conv_id, limite=30)
 
-            # Primeira mensagem do cliente: inicia apresentacao progressiva
-            if not msg_texto or len(historico) <= 1:
+            # So inicia apresentacao se ainda nao houver resposta do bot
+            tem_resposta = any(m["origem"] == "agente" for m in historico)
+            if not tem_resposta:
                 ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
                 self.processando.pop(remetente, None)
                 if ok:
-                    print(f"  -> Apresentacao iniciada para {safe(remetente)}")
+                    print(f"  -> Apresentacao iniciada para {safe(remetente)}", flush=True)
                 else:
-                    print(f"  -> Falha ao enviar menu para {safe(remetente)}")
+                    print(f"  -> Falha ao enviar menu para {safe(remetente)}", flush=True)
+                return
+
+            # Msg sem texto detectavel: reinicia apresentacao
+            if not msg_texto:
+                print(f"  -> Msg sem texto, reiniciando menu para {safe(remetente)}", flush=True)
+                ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
+                self.processando.pop(remetente, None)
+                if ok:
+                    print(f"  -> Apresentacao reiniciada para {safe(remetente)}", flush=True)
+                else:
+                    print(f"  -> Falha ao reiniciar menu para {safe(remetente)}", flush=True)
                 return
 
             etapa = (conversa or {}).get("etapa", "")
@@ -827,6 +910,8 @@ class WhatsAppBot:
                 if not estado:
                     self.apresentacao_menu.pop(telefone, None)
                     atualizar_etapa_conversa(conv_id, "menu_principal")
+                    self.processando.pop(remetente, None)
+                    return
                 else:
                     if msg_texto.strip().isdigit():
                         n = int(msg_texto.strip())
@@ -850,6 +935,8 @@ class WhatsAppBot:
                 if not estado:
                     self.apresentacao_submenu.pop(telefone, None)
                     atualizar_etapa_conversa(conv_id, "menu_principal")
+                    self.processando.pop(remetente, None)
+                    return
                 else:
                     if msg_texto.strip().isdigit():
                         n = int(msg_texto.strip())
