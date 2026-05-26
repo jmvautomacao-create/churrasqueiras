@@ -478,7 +478,7 @@ class WhatsAppBot:
                     finally:
                         est.pop("enviando", None)
 
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(0.8)
 
             except asyncio.CancelledError:
                 break
@@ -517,41 +517,41 @@ class WhatsAppBot:
 
     SELETOR_INPUT = '#main [contenteditable="true"]'
 
-    async def _aguardar_input(self, timeout=8):
+    async def _aguardar_input(self, timeout=5):
         for _ in range(timeout):
             el = await self.page.query_selector(self.SELETOR_INPUT)
             if el:
                 return el
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
         return None
 
     async def _digitar(self, texto: str):
-        caixa = await self._aguardar_input(8)
+        caixa = await self._aguardar_input(5)
         if not caixa:
             print("  [DIG] Input nao encontrado apos 20s")
             return False
         try:
             await caixa.fill("")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.2)
             await caixa.fill(texto)
             return True
         except Exception:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             try:
                 await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                await asyncio.sleep(0.3)
-                await self.page.keyboard.type(texto, delay=30)
+                await asyncio.sleep(0.2)
+                await self.page.keyboard.type(texto, delay=20)
                 return True
             except Exception as e:
                 print(f"  [DIG] Falha ao digitar: {safe(str(e)[:60])}")
                 return False
 
-    async def _clicar_enviar(self, max_tentativas=30, usar_enter=False):
+    async def _clicar_enviar(self, max_tentativas=15, usar_enter=False):
         for i in range(max_tentativas):
             if usar_enter:
                 try:
                     await self.page.keyboard.press("Enter")
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.2)
                     ok = await self.avaliar("""
                         () => {
                             const spans = document.querySelectorAll('span[data-icon="send"]');
@@ -600,41 +600,41 @@ class WhatsAppBot:
     async def _abrir_chat_sidebar(self, nome: str = "", telefone: str = "") -> bool:
         try:
             await self.page.wait_for_selector('#side', timeout=10000)
-            await asyncio.sleep(0.5)
             if nome:
                 for _ in range(3):
-                    ok = await self.avaliar(f"""
+                    # Usa Playwright para clicar no elemento [title] que contem o nome
+                    alvo = json.dumps(nome)
+                    handle = await self.avaliar(f"""
                         () => {{
                             const rows = document.querySelectorAll('#side [role="row"]');
-                            const alvo = {json.dumps(nome)};
+                            const alvo = {alvo};
                             for (const row of rows) {{
                                 const el = row.querySelector('[title]');
                                 if (el && el.getAttribute('title') === alvo) {{
-                                    row.click();
-                                    return true;
+                                    return el.getAttribute('title');
                                 }}
                             }}
-                            return false;
+                            return null;
                         }}
                     """)
-                    if ok:
-                        await asyncio.sleep(1.5)
-                        return True
-                    await asyncio.sleep(0.5)
-            for _ in range(5):
-                clicou = await self.avaliar("""
-                    () => {
-                        const row = document.querySelector('#side [role="row"]');
-                        if (row) { row.click(); return true; }
-                        return false;
-                    }
-                """)
-                if clicou:
-                    await asyncio.sleep(2)
+                    if handle:
+                        el = self.page.locator(f'#side [title="{nome}"]').first
+                        if await el.count() > 0:
+                            await el.click()
+                            await asyncio.sleep(0.8)
+                            return True
+                    await asyncio.sleep(0.3)
+            # Fallback: clica no primeiro chat da sidebar
+            for _ in range(3):
+                el = self.page.locator('#side [role="row"]').first
+                if await el.count() > 0:
+                    await el.click()
+                    await asyncio.sleep(1)
                     return True
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
             return False
-        except Exception:
+        except Exception as e:
+            print(f"  [sidebar erro] {safe(str(e)[:80])}", flush=True)
             return False
     async def enviar_texto(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
         try:
@@ -646,20 +646,12 @@ class WhatsAppBot:
                     if not nome:
                         continue
                     if await self._abrir_chat_sidebar(nome, numero):
-                        await asyncio.sleep(1)
-                        tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                        try:
+                            tem_input = await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=5000)
+                        except:
+                            tem_input = None
                         if tem_input:
                             break
-                # Ultimo recurso: goto p/ abrir conversa
-                if not tem_input:
-                    url = f"https://web.whatsapp.com/send?phone={numero}"
-                    await self.page.goto(url, wait_until="domcontentloaded")
-                    try:
-                        tem_input = await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=15000)
-                    except Exception:
-                        print(f"  -> Timeout goto input p/ {numero}", flush=True)
-                        return False
-                    await asyncio.sleep(1)
 
             if not tem_input:
                 print(f"  -> Input nao disponivel para {numero}", flush=True)
@@ -670,11 +662,11 @@ class WhatsAppBot:
                 print(f"  -> Input nao disponivel para {numero}", flush=True)
                 return False
             print("  Texto digitado", flush=True)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
             if await self._clicar_enviar():
                 print(f"  -> Enviado para {numero}", flush=True)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 return True
 
             print(f"  -> Falha ao enviar para {numero}", flush=True)
@@ -689,9 +681,9 @@ class WhatsAppBot:
             if not tem_input:
                 nome = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
                 if nome:
-                    for _ in range(5):
+                    for _ in range(3):
                         if await self._abrir_chat_sidebar(nome):
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.5)
                             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
                             if tem_input:
                                 break
@@ -717,26 +709,26 @@ class WhatsAppBot:
             """)
             if not clicou:
                 print("[AVISO] Nao encontrou botao anexar")
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
             input_file = self.page.locator('input[type="file"]').first
             await input_file.set_input_files(str(caminho))
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             if legenda:
                 cap = await self.page.query_selector('[data-testid="caption-input"]')
                 if cap:
                     try:
                         await cap.fill("")
-                        await cap.type(legenda, delay=30)
+                        await cap.type(legenda, delay=20)
                     except:
                         await cap.evaluate("el => el.focus()")
                         await self.page.keyboard.type(legenda)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
 
-            if await self._clicar_enviar(30, usar_enter=True):
+            if await self._clicar_enviar(15, usar_enter=True):
                 print(f"  -> Midia enviada: {Path(caminho).name}")
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 return
             print(f"  -> Falha ao enviar midia: {Path(caminho).name}")
         except Exception as e:
