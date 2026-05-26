@@ -47,11 +47,7 @@ def gerar_resposta(historico: list[dict]) -> str:
 
 def resposta_fallback(historico: list[dict]) -> str:
     from produtos import menu_interativo
-    return (
-        "Desculpe, estou offline no momento.\n\n"
-        "Enquanto isso, veja nosso catalogo:\n\n"
-        f"{menu_interativo()}"
-    )
+    return menu_interativo()
 
 
 def extrair_comando(texto: str) -> dict | None:
