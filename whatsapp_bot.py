@@ -418,6 +418,9 @@ class WhatsAppBot:
                         continue
                     vistos_ciclo.add(nome)
 
+                    if not telefone or len(telefone) < 12:
+                        continue
+
                     if c % 30 == 0 or nao_lida:
                         marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
@@ -444,6 +447,9 @@ class WhatsAppBot:
                     if nao_lida:
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
                         await self.processar_mensagem(nome, texto, telefone)
+                        # Processa apenas uma mensagem por ciclo para evitar
+                        # cascata de falhas quando o primeiro goto recarrega a pagina
+                        break
 
                 for tel, est in list(self.apresentacao_menu.items()):
                     if est.get("todos_enviados") or est.get("enviando"):
@@ -844,6 +850,11 @@ class WhatsAppBot:
                     telefone = "55" + telefone
                 if len(telefone) < 12:
                     telefone = "55" + re.sub(r'\D', '', remetente)
+
+            if len(telefone) < 12:
+                print(f"  -> Telefone invalido p/ {safe(remetente)}: {telefone}", flush=True)
+                self.processando.pop(remetente, None)
+                return
 
             cliente_id = criar_cliente(telefone, nome=remetente)
             conversa = get_conversa_ativa(telefone)
