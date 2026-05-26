@@ -178,7 +178,7 @@ class WhatsAppBot:
         chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
         for k in chaves:
             self.ultimo_visto_texto.pop(k, None)
-        primeiro = f"Voce escolheu: {produto['nome']}\n\n[1] Folder - Ver folder do produto"
+        primeiro = f"Voce escolheu: {produto['nome']}\n\nSelecione uma das opcoes abaixo:\n\n[1] Folder - Ver folder do produto"
         await self.enviar_para_cliente(telefone, primeiro)
         salvar_mensagem(conv_id, "agente", primeiro)
         self.apresentacao_submenu[telefone] = {
