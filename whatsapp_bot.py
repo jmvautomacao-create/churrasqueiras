@@ -686,6 +686,68 @@ class WhatsAppBot:
             print(f"[ERRO ENVIO] {safe(e)}", flush=True)
             return False
 
+    async def _clicar_anexar(self):
+        return await self.avaliar("""
+            () => {
+                const btns = document.querySelectorAll('button');
+                for (const b of btns) {
+                    const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                    if ((label.includes('anexar') || label.includes('attach')) && b.offsetParent !== null) {
+                        b.click(); return true;
+                    }
+                }
+                const divs = document.querySelectorAll('[data-testid="attach-file"]');
+                for (const d of divs) { if (d.offsetParent !== null) { d.click(); return true; } }
+                return false;
+            }
+        """)
+
+    async def _enviar_midia_como_foto(self, caminho: str):
+        # Tenta enviar como foto ampliavel via file chooser
+        for _ in range(2):
+            try:
+                async with self.page.expect_file_chooser(timeout=5000) as fc_info:
+                    await self._clicar_anexar()
+                    await asyncio.sleep(0.5)
+                    tem_pv = await self.avaliar("""
+                        () => { const el = document.querySelector('[data-testid="photo-video"]'); return !!el && el.offsetParent !== null; }
+                    """)
+                    if not tem_pv:
+                        return False
+                    await self.avaliar("""
+                        () => { const el = document.querySelector('[data-testid="photo-video"]'); if (el) el.click(); }
+                    """)
+                    await asyncio.sleep(0.3)
+                fc = await fc_info.value
+                await fc.set_files(str(caminho))
+                await asyncio.sleep(3)
+                return True
+            except Exception:
+                await asyncio.sleep(1)
+        return False
+
+    async def _enviar_midia_como_documento(self, caminho: str):
+        try:
+            async with self.page.expect_file_chooser(timeout=5000) as fc_info:
+                await self._clicar_anexar()
+                await asyncio.sleep(0.5)
+                tem_doc = await self.avaliar("""
+                    () => { const el = document.querySelector('[data-testid="attach-document"]'); return !!el && el.offsetParent !== null; }
+                """)
+                if not tem_doc:
+                    return False
+                await self.avaliar("""
+                    () => { const el = document.querySelector('[data-testid="attach-document"]'); if (el) el.click(); }
+                """)
+                await asyncio.sleep(0.3)
+            fc = await fc_info.value
+            await fc.set_files(str(caminho))
+            await asyncio.sleep(3)
+            return True
+        except Exception:
+            pass
+        return False
+
     async def enviar_midia(self, numero: str, caminho: str, legenda: str = ""):
         try:
             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
@@ -704,36 +766,25 @@ class WhatsAppBot:
                 return
 
             is_img = Path(caminho).suffix.lower() in (".jpg", ".jpeg", ".png")
+            ok = False
 
             if is_img:
-                # Envia como foto (ampliavel): usa file chooser do Playwright
-                async with self.page.expect_file_chooser() as fc_info:
-                    await self.page.locator('[data-testid="attach-file"]').first.click()
+                ok = await self._enviar_midia_como_foto(caminho)
+                if not ok:
+                    print("  -> Fallback: enviando como documento")
+                    await self._clicar_anexar()
                     await asyncio.sleep(0.5)
-                    pv = self.page.locator('[data-testid="photo-video"]')
-                    if await pv.count() > 0:
-                        await pv.click()
-                    else:
-                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                        await asyncio.sleep(3)
-                        return
-                fc = await fc_info.value
-                await fc.set_files(str(caminho))
-                await asyncio.sleep(3)
+                    await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                    await asyncio.sleep(3)
+                    ok = True
             else:
-                async with self.page.expect_file_chooser() as fc_info:
-                    await self.page.locator('[data-testid="attach-file"]').first.click()
+                ok = await self._enviar_midia_como_documento(caminho)
+                if not ok:
+                    await self._clicar_anexar()
                     await asyncio.sleep(0.5)
-                    doc = self.page.locator('[data-testid="attach-document"]')
-                    if await doc.count() > 0:
-                        await doc.click()
-                    else:
-                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                        await asyncio.sleep(3)
-                        return
-                fc = await fc_info.value
-                await fc.set_files(str(caminho))
-                await asyncio.sleep(3)
+                    await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                    await asyncio.sleep(3)
+                    ok = True
 
             if legenda:
                 cap = await self.page.query_selector('[data-testid="caption-input"]')
