@@ -421,6 +421,10 @@ class WhatsAppBot:
                     if not telefone or len(telefone) < 12:
                         continue
 
+                    # Modo teste: atende apenas NUMERO_TESTE
+                    if telefone != NUMERO_TESTE:
+                        continue
+
                     if c % 30 == 0 or nao_lida:
                         marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
@@ -624,19 +628,17 @@ class WhatsAppBot:
             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
             if not tem_input:
                 nome = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
-                if nome and await self._abrir_chat_sidebar(nome):
-                    await asyncio.sleep(1)
-                    tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                if nome:
+                    for _ in range(5):
+                        if await self._abrir_chat_sidebar(nome):
+                            await asyncio.sleep(1)
+                            tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                            if tem_input:
+                                break
 
             if not tem_input:
-                url = f"https://web.whatsapp.com/send?phone={numero}"
-                await self.page.goto(url, wait_until="domcontentloaded")
-                try:
-                    await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=30000)
-                except Exception:
-                    print(f"  -> Timeout aguardando input para {numero}", flush=True)
-                    return False
-                await asyncio.sleep(1)
+                print(f"  -> Input nao disponivel para {numero}", flush=True)
+                return False
 
             ok_dig = await self._digitar(texto)
             if not ok_dig:
@@ -661,19 +663,17 @@ class WhatsAppBot:
             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
             if not tem_input:
                 nome = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
-                if nome and await self._abrir_chat_sidebar(nome):
-                    await asyncio.sleep(1)
-                    tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                if nome:
+                    for _ in range(5):
+                        if await self._abrir_chat_sidebar(nome):
+                            await asyncio.sleep(1)
+                            tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                            if tem_input:
+                                break
 
             if not tem_input:
-                url = f"https://web.whatsapp.com/send?phone={numero}"
-                await self.page.goto(url, wait_until="domcontentloaded")
-                try:
-                    await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=30000)
-                except Exception:
-                    print(f"  -> Timeout aguardando input para midia {numero}")
-                    return
-                await asyncio.sleep(1)
+                print(f"  -> Input nao disponivel para midia {numero}", flush=True)
+                return
 
             clicou = await self._enviar_com_evaluate("""
                 () => {
