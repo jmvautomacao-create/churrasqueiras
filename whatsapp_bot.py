@@ -38,6 +38,7 @@ class WhatsAppBot:
         self.apresentacao_menu: dict[str, dict] = {}
         self.apresentacao_submenu: dict[str, dict] = {}
         self.continuar_submenu: dict[str, dict] = {}
+        self.primeiro_ciclo = True
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -479,6 +480,10 @@ class WhatsAppBot:
                     else:
                         nao_lida = False
 
+                    # Primeiro ciclo: apenas popula ultimo_texto_chat, nao processa nada
+                    if self.primeiro_ciclo:
+                        continue
+
                     if nao_lida:
                         self.ultimo_processamento[nome] = agora
                         if texto:
@@ -486,6 +491,8 @@ class WhatsAppBot:
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
                         await self.processar_mensagem(nome, texto, telefone, nome)
                         break
+
+                self.primeiro_ciclo = False
 
                 for tel, est in list(self.apresentacao_menu.items()):
                     if est.get("todos_enviados") or est.get("enviando"):
