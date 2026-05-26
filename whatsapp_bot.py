@@ -597,29 +597,42 @@ class WhatsAppBot:
             await asyncio.sleep(0.5)
         return False
 
-    async def _abrir_chat_sidebar(self, nome: str) -> bool:
+    async def _abrir_chat_sidebar(self, nome: str = "", telefone: str = "") -> bool:
         try:
             await self.page.wait_for_selector('#side', timeout=10000)
             await asyncio.sleep(0.5)
-            for _ in range(3):
-                ok = await self.avaliar(f"""
-                    () => {{
-                        const rows = document.querySelectorAll('#side [role="row"]');
-                        const alvo = {json.dumps(nome)};
-                        for (const row of rows) {{
-                            const el = row.querySelector('[title]');
-                            if (el && el.getAttribute('title') === alvo) {{
-                                row.click();
-                                return true;
+            if nome:
+                for _ in range(3):
+                    ok = await self.avaliar(f"""
+                        () => {{
+                            const rows = document.querySelectorAll('#side [role="row"]');
+                            const alvo = {json.dumps(nome)};
+                            for (const row of rows) {{
+                                const el = row.querySelector('[title]');
+                                if (el && el.getAttribute('title') === alvo) {{
+                                    row.click();
+                                    return true;
+                                }}
                             }}
+                            return false;
                         }}
+                    """)
+                    if ok:
+                        await asyncio.sleep(1.5)
+                        return True
+                    await asyncio.sleep(0.5)
+            for _ in range(5):
+                clicou = await self.avaliar("""
+                    () => {
+                        const row = document.querySelector('#side [role="row"]');
+                        if (row) { row.click(); return true; }
                         return false;
-                    }}
+                    }
                 """)
-                if ok:
-                    await asyncio.sleep(1.5)
+                if clicou:
+                    await asyncio.sleep(2)
                     return True
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
             return False
         except Exception:
             return False
@@ -632,14 +645,21 @@ class WhatsAppBot:
                 for nome in nomes:
                     if not nome:
                         continue
-                    for _ in range(3):
-                        if await self._abrir_chat_sidebar(nome):
-                            await asyncio.sleep(1)
-                            tem_input = await self.page.query_selector(self.SELETOR_INPUT)
-                            if tem_input:
-                                break
-                    if tem_input:
-                        break
+                    if await self._abrir_chat_sidebar(nome, numero):
+                        await asyncio.sleep(1)
+                        tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                        if tem_input:
+                            break
+                # Ultimo recurso: goto p/ abrir conversa
+                if not tem_input:
+                    url = f"https://web.whatsapp.com/send?phone={numero}"
+                    await self.page.goto(url, wait_until="domcontentloaded")
+                    try:
+                        tem_input = await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=15000)
+                    except Exception:
+                        print(f"  -> Timeout goto input p/ {numero}", flush=True)
+                        return False
+                    await asyncio.sleep(1)
 
             if not tem_input:
                 print(f"  -> Input nao disponivel para {numero}", flush=True)
