@@ -189,11 +189,12 @@ class WhatsAppBot:
             "[3] Foto - Enviar foto",
             "[4] Video - Enviar video",
             "[5] Frete - Solicitar cotacao de frete",
+            "[6] Voltar ao Menu Principal",
         ]
         BATCH = 3
         for _ in range(BATCH):
             idx = estado["proximo_idx"]
-            if idx > 5:
+            if idx > 6:
                 if not estado.get("todos_enviados"):
                     estado["todos_enviados"] = True
                     await self.enviar_para_cliente(telefone, "Digite o numero da opcao desejada!")
@@ -228,6 +229,13 @@ class WhatsAppBot:
                 f"Para solicitar o frete da {produto['nome']}, preciso de alguns dados.\n\n"
                 f"Primeiro, informe seu NOME completo:")
             salvar_mensagem(conv_id, "agente", "Solicitando dados para frete - informe o nome:")
+            return
+        elif opt == 6:
+            self.apresentacao_submenu.pop(telefone, None)
+            await self.enviar_para_cliente(telefone, "Voltando ao Menu Principal...")
+            ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
+            if ok:
+                print(f"  -> Menu reiniciado para {safe(telefone)}", flush=True)
             return
         self.processando[telefone] = True
         await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
