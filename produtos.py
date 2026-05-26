@@ -68,6 +68,5 @@ def valor_produto(produto: dict) -> str:
         f"{produto['nome']}\n"
         f"Preco: R$ {produto['preco']:.2f}\n\n"
         f"Dimensoes: {produto['medidas']}\n"
-        f"Peso: {produto['peso']}\n\n"
-        f"Volte ao menu digitando o numero do produto ou escolha: Folder, Foto, Video, Frete."
+        f"Peso: {produto['peso']}"
     )
