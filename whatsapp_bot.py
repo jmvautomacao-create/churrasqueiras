@@ -208,7 +208,7 @@ class WhatsAppBot:
             estado["proximo_idx"] = idx + 1
             estado["ultimo_envio"] = time.time()
 
-    async def _executar_opcao_submenu(self, telefone: str, conv_id: int, produto_id: int, opt: int):
+    async def _executar_opcao_submenu(self, telefone: str, conv_id: int, produto_id: int, opt: int, nome_sidebar: str = ""):
         produto = produto_por_id(produto_id)
         if not produto:
             return
@@ -232,8 +232,8 @@ class WhatsAppBot:
             return
         elif opt == 6:
             self.apresentacao_submenu.pop(telefone, None)
-            await self.enviar_para_cliente(telefone, "Voltando ao Menu Principal...")
-            ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
+            await self.enviar_para_cliente(telefone, "Voltando ao Menu Principal...", nome_sidebar)
+            ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
             if ok:
                 print(f"  -> Menu reiniciado para {safe(telefone)}", flush=True)
             return
@@ -974,7 +974,7 @@ class WhatsAppBot:
                         if n in estado["apresentados"]:
                             self.apresentacao_submenu.pop(telefone, None)
                             self.processando.pop(remetente, None)
-                            await self._executar_opcao_submenu(telefone, conv_id, estado["produto_id"], n)
+                            await self._executar_opcao_submenu(telefone, conv_id, estado["produto_id"], n, nome_sidebar)
                             return
                         else:
                             await self.enviar_para_cliente(telefone, f"Opção {n} ainda não foi apresentada. Aguarde...")
