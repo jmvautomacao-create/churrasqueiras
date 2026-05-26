@@ -151,19 +151,22 @@ class WhatsAppBot:
         return True
 
     async def _avancar_apresentacao_menu(self, telefone: str, conv_id: int, estado: dict):
-        if estado["proximo_idx"] > len(PRODUTOS):
-            estado["todos_enviados"] = True
-            await self.enviar_para_cliente(telefone, "Digite o numero do produto que deseja!")
-            return
-        p = PRODUTOS[estado["proximo_idx"] - 1]
-        item = f"[{estado['proximo_idx']}] {p['nome']}"
-        ok = await self.enviar_para_cliente(telefone, item)
-        if not ok:
-            return
-        salvar_mensagem(conv_id, "agente", item)
-        estado["apresentados"].append(estado["proximo_idx"])
-        estado["proximo_idx"] += 1
-        estado["ultimo_envio"] = time.time()
+        BATCH = 4
+        for _ in range(BATCH):
+            if estado["proximo_idx"] > len(PRODUTOS):
+                if not estado.get("todos_enviados"):
+                    estado["todos_enviados"] = True
+                    await self.enviar_para_cliente(telefone, "Digite o numero do produto que deseja!")
+                return
+            p = PRODUTOS[estado["proximo_idx"] - 1]
+            item = f"[{estado['proximo_idx']}] {p['nome']}"
+            ok = await self.enviar_para_cliente(telefone, item)
+            if not ok:
+                return
+            salvar_mensagem(conv_id, "agente", item)
+            estado["apresentados"].append(estado["proximo_idx"])
+            estado["proximo_idx"] += 1
+            estado["ultimo_envio"] = time.time()
 
     async def _iniciar_apresentacao_submenu(self, telefone: str, conv_id: int, produto: dict):
         self.apresentacao_submenu.pop(telefone, None)
@@ -187,19 +190,22 @@ class WhatsAppBot:
             "[4] Video - Enviar video",
             "[5] Frete - Solicitar cotacao de frete",
         ]
-        idx = estado["proximo_idx"]
-        if idx > 5:
-            estado["todos_enviados"] = True
-            await self.enviar_para_cliente(telefone, "Digite o numero da opcao desejada!")
-            return
-        item = SUB_ITENS[idx - 2]
-        ok = await self.enviar_para_cliente(telefone, item)
-        if not ok:
-            return
-        salvar_mensagem(conv_id, "agente", item)
-        estado["apresentados"].append(idx)
-        estado["proximo_idx"] = idx + 1
-        estado["ultimo_envio"] = time.time()
+        BATCH = 3
+        for _ in range(BATCH):
+            idx = estado["proximo_idx"]
+            if idx > 5:
+                if not estado.get("todos_enviados"):
+                    estado["todos_enviados"] = True
+                    await self.enviar_para_cliente(telefone, "Digite o numero da opcao desejada!")
+                return
+            item = SUB_ITENS[idx - 2]
+            ok = await self.enviar_para_cliente(telefone, item)
+            if not ok:
+                return
+            salvar_mensagem(conv_id, "agente", item)
+            estado["apresentados"].append(idx)
+            estado["proximo_idx"] = idx + 1
+            estado["ultimo_envio"] = time.time()
 
     async def _executar_opcao_submenu(self, telefone: str, conv_id: int, produto_id: int, opt: int):
         produto = produto_por_id(produto_id)
@@ -517,29 +523,25 @@ class WhatsAppBot:
 
     SELETOR_INPUT = '#main [contenteditable="true"]'
 
-    async def _aguardar_input(self, timeout=5):
-        for _ in range(timeout):
+    async def _aguardar_input(self, timeout=4):
+        for _ in range(timeout * 2):
             el = await self.page.query_selector(self.SELETOR_INPUT)
             if el:
                 return el
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.25)
         return None
 
     async def _digitar(self, texto: str):
-        caixa = await self._aguardar_input(5)
+        caixa = await self._aguardar_input(4)
         if not caixa:
-            print("  [DIG] Input nao encontrado apos 20s")
+            print("  [DIG] Input nao encontrado")
             return False
         try:
-            await caixa.fill("")
-            await asyncio.sleep(0.2)
             await caixa.fill(texto)
             return True
         except Exception:
-            await asyncio.sleep(0.3)
             try:
                 await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                await asyncio.sleep(0.2)
                 await self.page.keyboard.type(texto, delay=20)
                 return True
             except Exception as e:
@@ -594,7 +596,7 @@ class WhatsAppBot:
             """)
             if ok:
                 return True
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.25)
         return False
 
     async def _abrir_chat_sidebar(self, nome: str = "", telefone: str = "") -> bool:
@@ -621,17 +623,14 @@ class WhatsAppBot:
                         el = self.page.locator(f'#side [title="{nome}"]').first
                         if await el.count() > 0:
                             await el.click()
-                            await asyncio.sleep(0.8)
+                            await asyncio.sleep(0.4)
                             return True
-                    await asyncio.sleep(0.3)
-            # Fallback: clica no primeiro chat da sidebar
-            for _ in range(3):
-                el = self.page.locator('#side [role="row"]').first
-                if await el.count() > 0:
-                    await el.click()
-                    await asyncio.sleep(1)
-                    return True
-                await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.2)
+            el = self.page.locator('#side [role="row"]').first
+            if await el.count() > 0:
+                await el.click()
+                await asyncio.sleep(0.4)
+                return True
             return False
         except Exception as e:
             print(f"  [sidebar erro] {safe(str(e)[:80])}", flush=True)
@@ -661,12 +660,8 @@ class WhatsAppBot:
             if not ok_dig:
                 print(f"  -> Input nao disponivel para {numero}", flush=True)
                 return False
-            print("  Texto digitado", flush=True)
-            await asyncio.sleep(0.3)
-
             if await self._clicar_enviar():
                 print(f"  -> Enviado para {numero}", flush=True)
-                await asyncio.sleep(0.5)
                 return True
 
             print(f"  -> Falha ao enviar para {numero}", flush=True)
