@@ -706,41 +706,33 @@ class WhatsAppBot:
             is_img = Path(caminho).suffix.lower() in (".jpg", ".jpeg", ".png")
 
             if is_img:
-                # Envia como imagem: usa o input aceita imagem diretamente
-                img_input = self.page.locator('input[accept*="image"]')
-                if await img_input.count() > 0:
-                    await img_input.set_input_files(str(caminho))
-                else:
-                    # Fallback: fluxo do botao anexar
-                    await self._enviar_com_evaluate("""
-                        () => {
-                            const btn = document.querySelector('[data-testid="attach-file"]') ||
-                                       document.querySelector('button[aria-label*="anexar"], button[aria-label*="attach"]');
-                            if (btn) { btn.click(); return true; }
-                            return false;
-                        }
-                    """)
+                # Envia como foto (ampliavel): usa file chooser do Playwright
+                async with self.page.expect_file_chooser() as fc_info:
+                    await self.page.locator('[data-testid="attach-file"]').first.click()
                     await asyncio.sleep(0.5)
-                    foto = self.page.locator('[data-testid="photo-video"]')
-                    if await foto.count() > 0:
-                        await foto.click()
-                        await asyncio.sleep(0.5)
-                    await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                    await asyncio.sleep(3)
+                    pv = self.page.locator('[data-testid="photo-video"]')
+                    if await pv.count() > 0:
+                        await pv.click()
+                    else:
+                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                        await asyncio.sleep(3)
+                        return
+                fc = await fc_info.value
+                await fc.set_files(str(caminho))
+                await asyncio.sleep(3)
             else:
-                clicou = await self._enviar_com_evaluate("""
-                    () => {
-                        const btn = document.querySelector('[data-testid="attach-file"]') ||
-                                   document.querySelector('button[aria-label*="anexar"], button[aria-label*="attach"]');
-                        if (btn) { btn.click(); return true; }
-                        return false;
-                    }
-                """)
-                if not clicou:
-                    print("[AVISO] Nao encontrou botao anexar")
-                await asyncio.sleep(1)
-                input_file = self.page.locator('input[type="file"]').first
-                await input_file.set_input_files(str(caminho))
+                async with self.page.expect_file_chooser() as fc_info:
+                    await self.page.locator('[data-testid="attach-file"]').first.click()
+                    await asyncio.sleep(0.5)
+                    doc = self.page.locator('[data-testid="attach-document"]')
+                    if await doc.count() > 0:
+                        await doc.click()
+                    else:
+                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                        await asyncio.sleep(3)
+                        return
+                fc = await fc_info.value
+                await fc.set_files(str(caminho))
                 await asyncio.sleep(3)
 
             if legenda:
