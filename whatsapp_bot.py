@@ -132,6 +132,10 @@ class WhatsAppBot:
             pass
 
     async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int, nome_sidebar: str = "") -> bool:
+        # Limpa dedup p/ este telefone p/ permitir re-selecao
+        chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
+        for k in chaves:
+            self.ultimo_visto_texto.pop(k, None)
         primeiro = f"[1] {PRODUTOS[0]['nome']}"
         ok = await self.enviar_para_cliente(telefone,
             "Ola! Bem-vindo a JMV Churrasqueiras!\n"
@@ -170,6 +174,10 @@ class WhatsAppBot:
 
     async def _iniciar_apresentacao_submenu(self, telefone: str, conv_id: int, produto: dict):
         self.apresentacao_submenu.pop(telefone, None)
+        # Limpa dedup p/ este telefone p/ permitir re-selecao
+        chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
+        for k in chaves:
+            self.ultimo_visto_texto.pop(k, None)
         primeiro = f"Voce escolheu: {produto['nome']}\n\n[1] Folder - Ver folder do produto"
         await self.enviar_para_cliente(telefone, primeiro)
         salvar_mensagem(conv_id, "agente", primeiro)
@@ -443,14 +451,13 @@ class WhatsAppBot:
                         marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
 
-                    # Dedup: nao processar mesmo conteudo repetido em < 60s
+                    # Dedup: mesmo conteudo/sem texto nao processar repetido
                     agora = time.time()
                     ultimo = self.ultimo_processamento.get(nome, 0)
                     if texto:
-                        chave = f"{nome}|{texto}"
+                        chave = f"{telefone}|{texto}"
                         ult_visto = self.ultimo_visto_texto.get(chave, 0)
                         if agora - ult_visto < 60:
-                            # So ignora se jah foi processado com este conteudo
                             continue
                     else:
                         if agora - ultimo < 120:
@@ -465,7 +472,7 @@ class WhatsAppBot:
                     if nao_lida:
                         self.ultimo_processamento[nome] = agora
                         if texto:
-                            self.ultimo_visto_texto[f"{nome}|{texto}"] = agora
+                            self.ultimo_visto_texto[f"{telefone}|{texto}"] = agora
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
                         await self.processar_mensagem(nome, texto, telefone, nome)
                         break
@@ -696,28 +703,45 @@ class WhatsAppBot:
                 print(f"  -> Input nao disponivel para midia {numero}", flush=True)
                 return
 
-            clicou = await self._enviar_com_evaluate("""
-                () => {
-                    const botoes = document.querySelectorAll('button');
-                    for (const btn of botoes) {
-                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        if ((label.includes('anexar') || label.includes('attach')) && btn.offsetParent !== null) {
-                            btn.click();
-                            return true;
-                        }
-                    }
-                    const divs = document.querySelectorAll('[data-testid="attach-file"]');
-                    for (const d of divs) { if (d.offsetParent !== null) { d.click(); return true; } }
-                    return false;
-                }
-            """)
-            if not clicou:
-                print("[AVISO] Nao encontrou botao anexar")
-            await asyncio.sleep(1)
+            is_img = Path(caminho).suffix.lower() in (".jpg", ".jpeg", ".png")
 
-            input_file = self.page.locator('input[type="file"]').first
-            await input_file.set_input_files(str(caminho))
-            await asyncio.sleep(3)
+            if is_img:
+                # Envia como imagem: usa o input aceita imagem diretamente
+                img_input = self.page.locator('input[accept*="image"]')
+                if await img_input.count() > 0:
+                    await img_input.set_input_files(str(caminho))
+                else:
+                    # Fallback: fluxo do botao anexar
+                    await self._enviar_com_evaluate("""
+                        () => {
+                            const btn = document.querySelector('[data-testid="attach-file"]') ||
+                                       document.querySelector('button[aria-label*="anexar"], button[aria-label*="attach"]');
+                            if (btn) { btn.click(); return true; }
+                            return false;
+                        }
+                    """)
+                    await asyncio.sleep(0.5)
+                    foto = self.page.locator('[data-testid="photo-video"]')
+                    if await foto.count() > 0:
+                        await foto.click()
+                        await asyncio.sleep(0.5)
+                    await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                    await asyncio.sleep(3)
+            else:
+                clicou = await self._enviar_com_evaluate("""
+                    () => {
+                        const btn = document.querySelector('[data-testid="attach-file"]') ||
+                                   document.querySelector('button[aria-label*="anexar"], button[aria-label*="attach"]');
+                        if (btn) { btn.click(); return true; }
+                        return false;
+                    }
+                """)
+                if not clicou:
+                    print("[AVISO] Nao encontrou botao anexar")
+                await asyncio.sleep(1)
+                input_file = self.page.locator('input[type="file"]').first
+                await input_file.set_input_files(str(caminho))
+                await asyncio.sleep(3)
 
             if legenda:
                 cap = await self.page.query_selector('[data-testid="caption-input"]')
