@@ -4,3 +4,5 @@ data/
 database/agente.db
 *.db
 .env
+solicitacoes/
+~$*

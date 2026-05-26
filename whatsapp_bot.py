@@ -942,6 +942,18 @@ class WhatsAppBot:
                     break
         return info
 
+    def _limpar_endereco(self, endereco: str, cidade: str, estado: str, cep: str) -> str:
+        clean = endereco
+        if cep:
+            clean = re.sub(rf"\s*,?\s*{re.escape(cep)}\s*", "", clean)
+        if estado:
+            clean = re.sub(rf"\s*,?\s*{re.escape(estado)}\s*,?\s*$", "", clean)
+        if cidade:
+            clean = re.sub(rf"\s*,?\s*{re.escape(cidade)}\s*,?\s*$", "", clean)
+        clean = re.sub(r"\s*,\s*", ",", clean)
+        clean = re.sub(r",+", ",", clean)
+        return clean.strip().strip(",").strip()
+
     def _salvar_solicitacao_frete(self, telefone, nome, cpf, endereco, cidade, estado, cep):
         from openpyxl import Workbook
         pasta = PASTA_SOLICITACOES
@@ -951,6 +963,7 @@ class WhatsAppBot:
         nome_arquivo = f"Solicitacao_Frete_{nome_limpo}_{agora.strftime('%d-%m-%Y')}_{agora.strftime('%H%M')}.xlsx"
         caminho = pasta / nome_arquivo
         cabecalhos = ["CAMPO", "VALOR"]
+        endereco_limpo = self._limpar_endereco(endereco, cidade, estado, cep)
         conversa = get_conversa_ativa(telefone)
         produto_id = (conversa or {}).get("produto_interesse_id")
         produto = produto_por_id(produto_id) if produto_id else None
@@ -959,7 +972,7 @@ class WhatsAppBot:
             ("NOME", nome),
             ("WHATSAPP", telefone),
             ("CPF/CNPJ", cpf),
-            ("ENDERECO", endereco),
+            ("ENDERECO", endereco_limpo),
             ("CIDADE", cidade),
             ("ESTADO", estado),
             ("CEP", cep),
