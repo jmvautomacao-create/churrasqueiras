@@ -476,6 +476,8 @@ class WhatsAppBot:
                     if texto and texto != ultimo_texto:
                         self.ultimo_texto_chat[nome] = texto
                         nao_lida = True
+                    else:
+                        nao_lida = False
 
                     if nao_lida:
                         self.ultimo_processamento[nome] = agora
