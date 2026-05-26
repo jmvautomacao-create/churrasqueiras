@@ -28,10 +28,10 @@ class WhatsAppBot:
         self.context = None
         self.playwright = None
         self.logado = False
-        self.vistos = set()
         self.processando: dict[str, bool] = {}
         self.ultimo_processamento: dict[str, float] = {}
         self.ultimo_texto_chat: dict[str, str] = {}
+        self.ultimo_visto_texto: dict[str, float] = {}
         self.mapa_contatos = {}
         self.ultimo_mapa = 0
         self.apresentacao_menu: dict[str, dict] = {}
@@ -443,18 +443,17 @@ class WhatsAppBot:
                         marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
 
-                    # Dedup por conteudo (texto) ou tempo (sem texto)
+                    # Dedup: nao processar mesmo conteudo repetido em < 60s
                     agora = time.time()
                     ultimo = self.ultimo_processamento.get(nome, 0)
                     if texto:
                         chave = f"{nome}|{texto}"
-                        if chave in self.vistos:
+                        ult_visto = self.ultimo_visto_texto.get(chave, 0)
+                        if agora - ult_visto < 60:
+                            # So ignora se jah foi processado com este conteudo
                             continue
-                        if agora - ultimo < 5:
-                            continue
-                        self.vistos.add(chave)
                     else:
-                        if agora - ultimo < 60:
+                        if agora - ultimo < 120:
                             continue
 
                     # Fallback: detectar por mudanca de texto (msgs sem badge)
@@ -465,6 +464,8 @@ class WhatsAppBot:
 
                     if nao_lida:
                         self.ultimo_processamento[nome] = agora
+                        if texto:
+                            self.ultimo_visto_texto[f"{nome}|{texto}"] = agora
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
                         await self.processar_mensagem(nome, texto, telefone, nome)
                         break
