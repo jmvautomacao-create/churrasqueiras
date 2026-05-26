@@ -475,7 +475,7 @@ class WhatsAppBot:
                             continue
 
                     # Pula se o bot acabou de enviar mensagem pra este chat
-                    if self.ultimo_envio.get(nome, 0) > agora - 120:
+                    if self.ultimo_envio.get(nome, 0) > agora - 10:
                         continue
                     ultimo_env = self.ultimo_envio_texto.get(nome, "")
                     if texto and ultimo_env and (ultimo_env.startswith(texto) or texto.startswith(ultimo_env)):
