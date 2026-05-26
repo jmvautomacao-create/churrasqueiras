@@ -131,12 +131,12 @@ class WhatsAppBot:
         except:
             pass
 
-    async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int) -> bool:
+    async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int, nome_sidebar: str = "") -> bool:
         primeiro = f"[1] {PRODUTOS[0]['nome']}"
         ok = await self.enviar_para_cliente(telefone,
             "Ola! Bem-vindo a JMV Churrasqueiras!\n"
             "Escolha um modelo digitando o NUMERO correspondente:\n\n"
-            f"{primeiro}")
+            f"{primeiro}", nome_sidebar)
         if not ok:
             return False
         salvar_mensagem(conv_id, "agente", primeiro)
@@ -450,7 +450,7 @@ class WhatsAppBot:
 
                     if nao_lida:
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
-                        await self.processar_mensagem(nome, texto, telefone)
+                        await self.processar_mensagem(nome, texto, telefone, nome)
                         # Processa apenas uma mensagem por ciclo para evitar
                         # cascata de falhas quando o primeiro goto recarrega a pagina
                         break
@@ -623,18 +623,23 @@ class WhatsAppBot:
             return False
         except Exception:
             return False
-    async def enviar_texto(self, numero: str, texto: str) -> bool:
+    async def enviar_texto(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
         try:
             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
             if not tem_input:
-                nome = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
-                if nome:
-                    for _ in range(5):
+                nomes = [nome_sidebar] if nome_sidebar else []
+                nomes += [n for n, t in self.mapa_contatos.items() if t == numero]
+                for nome in nomes:
+                    if not nome:
+                        continue
+                    for _ in range(3):
                         if await self._abrir_chat_sidebar(nome):
                             await asyncio.sleep(1)
                             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
                             if tem_input:
                                 break
+                    if tem_input:
+                        break
 
             if not tem_input:
                 print(f"  -> Input nao disponivel para {numero}", flush=True)
@@ -717,8 +722,8 @@ class WhatsAppBot:
         except Exception as e:
             print(f"[ERRO MIDIA] {safe(e)}")
 
-    async def enviar_para_cliente(self, numero: str, texto: str) -> bool:
-        return await self.enviar_texto(numero, texto)
+    async def enviar_para_cliente(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
+        return await self.enviar_texto(numero, texto, nome_sidebar)
 
     async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = ""):
         await self.enviar_midia(numero, caminho, legenda)
@@ -838,7 +843,7 @@ class WhatsAppBot:
                 await self.enviar_para_cliente(telefone,
                     f"Nao recebi retorno da {t['nome']} ainda. Assim que responder, aviso.")
 
-    async def processar_mensagem(self, remetente: str, msg_texto: str, telefone: str = ""):
+    async def processar_mensagem(self, remetente: str, msg_texto: str, telefone: str = "", nome_sidebar: str = ""):
         if remetente in self.processando:
             return
         self.processando[remetente] = True
@@ -870,7 +875,7 @@ class WhatsAppBot:
             # So inicia apresentacao se ainda nao houver resposta do bot
             tem_resposta = any(m["origem"] == "agente" for m in historico)
             if not tem_resposta:
-                ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
+                ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                 self.processando.pop(remetente, None)
                 if ok:
                     print(f"  -> Apresentacao iniciada para {safe(remetente)}", flush=True)
@@ -881,7 +886,7 @@ class WhatsAppBot:
             # Msg sem texto detectavel: reinicia apresentacao
             if not msg_texto:
                 print(f"  -> Msg sem texto, reiniciando menu para {safe(remetente)}", flush=True)
-                ok = await self._iniciar_apresentacao_menu(telefone, conv_id)
+                ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                 self.processando.pop(remetente, None)
                 if ok:
                     print(f"  -> Apresentacao reiniciada para {safe(remetente)}", flush=True)
