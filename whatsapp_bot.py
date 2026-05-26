@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 from playwright.async_api import async_playwright
 
-from config import PRODUTOS, SEU_NUMERO, NUMERO_TESTE, TRANSPORTADORAS, BASE_DIR, PASTA_SOLICITACOES
+from config import PRODUTOS, SEU_NUMERO, TRANSPORTADORAS, BASE_DIR, PASTA_SOLICITACOES
 from database import (
     cliente_por_telefone, criar_cliente, criar_conversa, salvar_mensagem,
     atualizar_etapa_conversa, atualizar_produto_interesse, criar_cotacao,
@@ -452,10 +452,6 @@ class WhatsAppBot:
                     vistos_ciclo.add(nome)
 
                     if not telefone or len(telefone) < 12:
-                        continue
-
-                    # Modo teste: atende apenas NUMERO_TESTE
-                    if telefone != NUMERO_TESTE:
                         continue
 
                     if c % 30 == 0 or nao_lida:
