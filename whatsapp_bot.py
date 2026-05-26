@@ -703,27 +703,40 @@ class WhatsAppBot:
         """)
 
     async def _enviar_midia_como_foto(self, caminho: str):
-        # Tenta enviar como foto ampliavel via file chooser
-        for _ in range(2):
-            try:
-                async with self.page.expect_file_chooser(timeout=5000) as fc_info:
-                    await self._clicar_anexar()
-                    await asyncio.sleep(0.5)
-                    tem_pv = await self.avaliar("""
-                        () => { const el = document.querySelector('[data-testid="photo-video"]'); return !!el && el.offsetParent !== null; }
-                    """)
-                    if not tem_pv:
-                        return False
-                    await self.avaliar("""
-                        () => { const el = document.querySelector('[data-testid="photo-video"]'); if (el) el.click(); }
-                    """)
-                    await asyncio.sleep(0.3)
-                fc = await fc_info.value
-                await fc.set_files(str(caminho))
+        # Estrategia A: tenta foto ampliavel via file chooser
+        await self._clicar_anexar()
+        await asyncio.sleep(0.5)
+        tem_pv = await self.avaliar("""
+            () => {
+                const el = document.querySelector('[data-testid="photo-video"]');
+                return !!el && el.offsetParent !== null;
+            }
+        """)
+        if tem_pv:
+            for _ in range(2):
+                try:
+                    async with self.page.expect_file_chooser(timeout=5000) as fc_info:
+                        await self.avaliar("""
+                            () => { document.querySelector('[data-testid="photo-video"]').click(); }
+                        """)
+                        await asyncio.sleep(0.3)
+                    fc = await fc_info.value
+                    await fc.set_files(str(caminho))
+                    await asyncio.sleep(3)
+                    return True
+                except Exception:
+                    await asyncio.sleep(1)
+
+        # Estrategia B: input[accept*=image] diretamente
+        try:
+            img_inp = self.page.locator('input[accept*="image"]').first
+            if await img_inp.count() > 0:
+                await img_inp.set_input_files(str(caminho))
                 await asyncio.sleep(3)
                 return True
-            except Exception:
-                await asyncio.sleep(1)
+        except Exception:
+            pass
+
         return False
 
     async def _enviar_midia_como_documento(self, caminho: str):
@@ -772,16 +785,12 @@ class WhatsAppBot:
                 ok = await self._enviar_midia_como_foto(caminho)
                 if not ok:
                     print("  -> Fallback: enviando como documento")
-                    await self._clicar_anexar()
-                    await asyncio.sleep(0.5)
                     await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
                     await asyncio.sleep(3)
                     ok = True
             else:
                 ok = await self._enviar_midia_como_documento(caminho)
                 if not ok:
-                    await self._clicar_anexar()
-                    await asyncio.sleep(0.5)
                     await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
                     await asyncio.sleep(3)
                     ok = True
