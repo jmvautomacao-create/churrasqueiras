@@ -474,8 +474,11 @@ class WhatsAppBot:
                     if self.ultimo_envio.get(nome, 0) > agora - 10:
                         continue
                     ultimo_env = self.ultimo_envio_texto.get(nome, "")
-                    if texto and ultimo_env and (ultimo_env.startswith(texto) or texto.startswith(ultimo_env)):
-                        continue
+                    if texto and ultimo_env:
+                        texto_norm = re.sub(r'\s+', ' ', texto).strip()
+                        envio_norm = re.sub(r'\s+', ' ', ultimo_env).strip()
+                        if envio_norm.startswith(texto_norm) or texto_norm.startswith(envio_norm):
+                            continue
 
                     # Fallback: detectar por mudanca de texto (msgs sem badge)
                     ultimo_texto = self.ultimo_texto_chat.get(nome, "")
