@@ -443,18 +443,19 @@ class WhatsAppBot:
                         marca = f" [tel:{telefone}]" if telefone else ""
                         print(f"  [{c}] {safe(nome)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
 
+                    # Dedup por conteudo (texto) ou tempo (sem texto)
+                    agora = time.time()
+                    ultimo = self.ultimo_processamento.get(nome, 0)
                     if texto:
                         chave = f"{nome}|{texto}"
                         if chave in self.vistos:
                             continue
+                        if agora - ultimo < 5:
+                            continue
                         self.vistos.add(chave)
                     else:
-                        # Sem texto: dedup por tempo p/ nao perder msgs novas
-                        agora = time.time()
-                        ultimo = self.ultimo_processamento.get(nome, 0)
-                        if agora - ultimo < 8:
+                        if agora - ultimo < 60:
                             continue
-                        self.ultimo_processamento[nome] = agora
 
                     # Fallback: detectar por mudanca de texto (msgs sem badge)
                     ultimo_texto = self.ultimo_texto_chat.get(nome, "")
@@ -463,10 +464,9 @@ class WhatsAppBot:
                         nao_lida = True
 
                     if nao_lida:
+                        self.ultimo_processamento[nome] = agora
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome)}: {safe(texto)}", flush=True)
                         await self.processar_mensagem(nome, texto, telefone, nome)
-                        # Processa apenas uma mensagem por ciclo para evitar
-                        # cascata de falhas quando o primeiro goto recarrega a pagina
                         break
 
                 for tel, est in list(self.apresentacao_menu.items()):
