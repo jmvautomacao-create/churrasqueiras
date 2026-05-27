@@ -20,24 +20,23 @@
 
 ## Critical Dedup Chain (main loop, `escutar_mensagens`)
 
-Checks applied in order per chat per cycle:
+Checks applied in order per chat per cycle. **ALL dedup dicts use `telefone` as key** (not `nome_key`), so name changes (e.g. phone number → saved contact) never break dedup:
 
 1. **`ultimo_visto_texto["tel\|texto"]`** (600s) — same message content from same user already processed successfully
-2. **`ultimo_envio[nome_key]`** (10s) — bot just sent a message to this chat
-3. **`ultimo_envio_texto[nome_key]`** — sidebar text matches last sent message (whitespace-normalized `startswith`)
-4. **`ultimo_texto_chat[nome_key]`** — text unchanged from last cycle; if bot sent msg within 30s, clears `nao_lida` flag
+2. **`ultimo_envio[telefone]`** (10s) — bot just sent a message to this chat
+3. **`ultimo_envio_texto[telefone]`** — sidebar text matches last sent message (whitespace-normalized `startswith`)
+4. **`ultimo_texto_chat[telefone]`** — text unchanged from last cycle; if bot sent msg within 30s, clears `nao_lida` flag
 5. **`primeiro_ciclo`** — first loop iteration populates `ultimo_texto_chat` without processing anything
 
-After `processar_mensagem`, `ultimo_visto_texto` is set only if `ultimo_envio[nome_key]` was updated (send succeeded).
+After `processar_mensagem`, `ultimo_visto_texto` is set only if `ultimo_envio[telefone]` was updated (send succeeded).
+
+### Processing Lock (`processando`)
+
+Uses `telefone` as key (not `nome_key`). Ensures only one thread processes a given phone number at a time. The telefone validation and derivation (from remetente if needed) happens BEFORE the lock check to prevent empty-key locks.
 
 ### Name Normalization (`_n()`)
 
-All dict keys derived from sidebar names (`nome_key`) are normalized via `WhatsAppBot._n()` before access:
-- NFKC Unicode normalization (collapses non-breaking spaces, ligatures, etc.)
-- Whitespace collapsed to single space, trimmed
-- Raw `nome_raw` (from DOM) is kept separate for `_abrir_chat_sidebar` (DOM interaction needs exact match)
-
-This ensures consistent key matching across cycles even when WhatsApp Web returns Unicode variants.
+Used for content normalization but NOT as dict key for dedup. Raw `nome_raw` (from DOM) is kept separate for `_abrir_chat_sidebar` (DOM interaction needs exact match).
 
 ### Skip Logging
 
@@ -47,6 +46,21 @@ Each dedup check logs a `[SKIP]` line at heartbeat intervals (`c % 30 == 0`) sho
 [210 SKIP] Jean 1: envio recente (3.2s)
 [210 SKIP] Maria: texto igual ao ultimo envio
 ```
+
+## Chat Opening (`_abrir_chat_sidebar`)
+
+Two search strategies:
+1. **Name search**: `get_by_title(nome)` + JS NFKC-normalized fallback (5 attempts)
+2. **Phone fallback**: if name search fails and `telefone` is provided, matches by stripping non-digits from row titles using `endsWith` (3 attempts)
+
+Both `enviar_texto` and `enviar_midia` always open the correct chat before sending (no `tem_input` reuse). They iterate all known names from `mapa_contatos` before trying phone-only fallback.
+
+## Submenu Continuar (`submenu_continuar`)
+
+When the user responds to "Deseja mais alguma opcao? [1] SIM / [2] NAO":
+- `"1"` or `"sim"` → reopens submenu
+- `"2"`, `"nao"`, `"não"`, or `"voltar"` → returns to main menu
+- **Anything else** → falls through to free conversation (Gemini/fallback), allowing the user to chat naturally
 
 ### Periodic Dict Cleanup (`_limpar_dicts_antigos`)
 
@@ -67,11 +81,11 @@ WhatsApp Web sidebar replaces `\n` with spaces and truncates to ~80 chars. All d
 
 | Dict | Key | Value | Purpose |
 |---|---|---|---|
-| `processando` | nome_key (normalized) | bool | Concurrent processing lock |
-| `ultimo_envio` | nome_key (normalized) | timestamp | Last successful send time |
-| `ultimo_envio_texto` | nome_key (normalized) | full text | Last sent message content |
+| `processando` | telefone | bool | Concurrent processing lock |
+| `ultimo_envio` | telefone | timestamp | Last successful send time |
+| `ultimo_envio_texto` | telefone | full text | Last sent message content |
 | `ultimo_visto_texto` | `"telefone\|texto"` | timestamp | Dedup for same user+text |
-| `ultimo_texto_chat` | nome_key (normalized) | text | Last seen sidebar text |
+| `ultimo_texto_chat` | telefone | text | Last seen sidebar text |
 | `ultimo_fallback` | telefone | timestamp | Gemini fallback throttle |
 | `apresentacao_menu` | telefone | dict | Menu state (todos_enviados=True means done) |
 
