@@ -6,3 +6,5 @@ database/agente.db
 .env
 solicitacoes/
 ~$*
+bot_log.txt
+bot_err.txt
