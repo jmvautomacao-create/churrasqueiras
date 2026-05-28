@@ -1,14 +1,23 @@
 import json
+import time
 from google import genai
 from google.genai import types
 from config import GEMINI_API_KEY, PRODUTOS
 
 cliente = genai.Client(api_key=GEMINI_API_KEY)
 
+# Catalogo compacto em texto puro (~80% menos tokens que JSON indentado)
+_catalogo = "\n".join(
+    f"{p['id']}. {p['nome']} - R$ {p['preco']:,.2f}\n"
+    f"   Descrição: {p['descricao']}\n"
+    f"   Medidas: {p['medidas']}, Peso: {p['peso']}"
+    for p in PRODUTOS
+)
+
 SISTEMA = f"""Você é um vendedor de churrasqueiras no WhatsApp. Atenda os clientes de forma educada e objetiva.
 
 ## CATÁLOGO DE PRODUTOS
-{json.dumps(PRODUTOS, indent=2, ensure_ascii=False)}
+{_catalogo}
 
 ## SEU PAPEL
 O sistema já envia automaticamente:
@@ -29,12 +38,28 @@ Você atua quando o cliente faz perguntas abertas (ex: "qual a diferença?", "é
 - Quando a venda for confirmada, responda com: [VENDA_CONFIRMADA:<cliente_nome>:<telefone>:<produto_id>:<valor_total>]
 - Responda sempre em português brasileiro"""
 
+# Throttle global
+_ultima_chamada: float = 0
+_INTERVALO_MINIMO = 2.0  # segundos entre chamadas
+
+
+def _throttle():
+    global _ultima_chamada
+    agora = time.time()
+    espera = _INTERVALO_MINIMO - (agora - _ultima_chamada)
+    if espera > 0:
+        time.sleep(espera)
+    _ultima_chamada = time.time()
+
 
 def gerar_resposta(historico: list[dict]) -> str:
     from google.genai import types
 
+    _throttle()
+
     contents = [types.Content(role="user", parts=[types.Part(text=SISTEMA)])]
-    for m in historico:
+    # Envia apenas as últimas 10 mensagens (vs 30 antes)
+    for m in historico[-10:]:
         role = "user" if m["origem"] == "cliente" else "model"
         contents.append(types.Content(role=role, parts=[types.Part(text=m["conteudo"])]))
 

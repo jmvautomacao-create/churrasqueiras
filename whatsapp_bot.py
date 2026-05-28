@@ -51,6 +51,13 @@ class WhatsAppBot:
         self.ultimo_fallback: dict[str, float] = {}
         self.ultima_limpeza = 0.0
         self.chats_com_resposta: set[str] = set()
+        self.ultimo_gemini: dict[str, float] = {}
+        self.gemini_diario = 0
+        self.gemini_diario_data = ""
+        self.GEMINI_MAX_DIARIO = 1200  # limite seguro abaixo dos 1500/dia da free tier
+        self.fretes_pendentes: dict[str, dict] = {}
+        self.proximo_id_frete: int = 0
+        self._respostas_frete_vistas: set[str] = set()
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -334,12 +341,17 @@ class WhatsAppBot:
         for k in list(self.ultimo_fallback):
             if agora - self.ultimo_fallback[k] > limite:
                 del self.ultimo_fallback[k]
+        for k in list(self.ultimo_gemini):
+            if agora - self.ultimo_gemini[k] > limite:
+                del self.ultimo_gemini[k]
         for k in list(self.ultimo_processamento):
             if agora - self.ultimo_processamento[k] > limite:
                 del self.ultimo_processamento[k]
         for k in list(self.processando):
             if agora - self.ultimo_processamento.get(k, 0) > 300:
                 del self.processando[k]
+        # Limpa dedup de respostas de frete (retem apenas ultima 1h)
+        self._respostas_frete_vistas.clear()
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
 
     async def detectar_chats(self):
@@ -447,12 +459,6 @@ class WhatsAppBot:
                     if not nome_raw or nome_raw == "DEBUG" or nome_raw.startswith("Filt"):
                         continue
 
-                    # Transportadora FOB: ignorar no loop principal, processada apenas em _solicitar_frete_fob
-                    if telefone == self.TRANSPORTADORA_FOB:
-                        if c % 30 == 0:
-                            print(f"  [{c} SKIP] {safe(nome_raw)}: transportadora FOB ignorada no loop principal")
-                        continue
-
                     # Dedup intra-ciclo: chats duplicados (ex: role="row" aninhado)
                     if nome_key in vistos_ciclo:
                         continue
@@ -536,6 +542,8 @@ class WhatsAppBot:
 
                 # Auto-advance removido: menu e submenu sao enviados completos em uma unica mensagem
 
+                if c % 60 == 0:
+                    await self._processar_fretes_pendentes()
                 if c % 600 == 0:
                     await self._limpar_dicts_antigos()
 
@@ -988,35 +996,27 @@ class WhatsAppBot:
     async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = "", force_document: bool = False):
         await self.enviar_midia(numero, caminho, legenda, force_document)
 
-    async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict):
+    def _gerar_id_frete(self) -> str:
+        self.proximo_id_frete += 1
+        data = datetime.now().strftime("%Y%m%d")
+        return f"FRETE-{data}-{self.proximo_id_frete:03d}"
+
+    async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
+        nome = cliente_info.get("nome", "N/I")
         msg = (
-            f"Ola {transportadora['nome']}, solicitação de cotação de frete:\n"
+            f"SOLICITAÇÃO #{request_id}\n"
+            f"{'='*30}\n"
+            f"Cliente: {nome}\n"
             f"Produto: {produto['nome']}\n"
             f"Dimensoes: {produto['medidas']}  Peso: {produto['peso']}\n"
             f"Endereco: {cliente_info.get('endereco', 'N/I')} - "
             f"{cliente_info.get('cidade', 'N/I')}/{cliente_info.get('estado', 'N/I')} "
             f"CEP: {cliente_info.get('cep', 'N/I')}\n"
-            f"Favor informar valor do frete e prazo."
+            f"{'='*30}\n"
+            f"Favor informar VALOR DO FRETE + PRAZO DE ENTREGA.\n"
+            f"Ex: R$ 150,00 - 5 dias úteis"
         )
         await self.enviar_texto(transportadora["numero"], msg)
-        return transportadora["nome"]
-
-    async def aguardar_resposta_transportadora(self, transportadora_nome: str, timeout: int = 120) -> str | None:
-        inicio = time.time()
-        while time.time() - inicio < timeout:
-            await asyncio.sleep(5)
-            raw = await self.detectar_chats()
-            chats = json.loads(raw)
-            for chat in chats:
-                if transportadora_nome.lower() not in chat["nome"].lower():
-                    continue
-                if not chat["nao_lida"]:
-                    continue
-                chave = f"{chat['nome']}|{chat['texto']}"
-                if chave not in self.vistos:
-                    self.vistos.add(chave)
-                    return chat["texto"]
-        return None
 
     async def _enviar_folder(self, conv_id: int, telefone: str, produto: dict):
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
@@ -1164,6 +1164,13 @@ class WhatsAppBot:
         """)
         return raw.strip()
 
+    TRANSPORTADORA_FOB = "555199769477"
+
+    def _telefones_transportadoras(self) -> dict[str, str]:
+        trans = {t["nome"]: t["numero"] for t in TRANSPORTADORAS}
+        trans["FOB"] = self.TRANSPORTADORA_FOB
+        return trans
+
     async def _executar_frete(self, conv_id: int, cliente_id: int, telefone: str):
         cliente = cliente_por_telefone(telefone)
         if not cliente:
@@ -1180,29 +1187,80 @@ class WhatsAppBot:
             return
 
         ci = {
+            "nome": cliente.get("nome", "N/I"),
             "endereco": cliente.get("endereco", ""),
             "cidade": cliente.get("cidade", ""),
             "cep": cliente.get("cep", ""),
             "estado": cliente.get("estado", ""),
         }
-        await self.enviar_para_cliente(telefone, "Consultando frete...")
+        request_id = self._gerar_id_frete()
+        transportadoras_reg = {}
         for t in TRANSPORTADORAS:
             cot_id = criar_cotacao(conv_id, t["nome"])
-            await self.solicitar_frete_transportadora(t, produto, ci)
-            resp = await self.aguardar_resposta_transportadora(t["nome"], 180)
-            if resp:
-                v = self.extrair_valor_frete(resp)
-                pz = self.extrair_prazo(resp)
-                atualizar_cotacao(cot_id, valor_frete=v, prazo=pz, status="recebida")
-                await self.enviar_para_cliente(telefone,
-                    f"Frete {t['nome']}: R$ {v:.2f} ({pz or 'a confirmar'})\n"
-                    f"Total: R$ {produto['preco'] + v:.2f}\nDeseja confirmar?")
-            else:
-                atualizar_cotacao(cot_id, status="sem_resposta")
-                await self.enviar_para_cliente(telefone,
-                    f"Nao recebi retorno da {t['nome']} ainda. Assim que responder, aviso.")
+            transportadoras_reg[t["nome"]] = {
+                "telefone": t["numero"], "cot_id": cot_id,
+                "enviado_em": time.time(), "respondido": False,
+            }
+        transportadoras_reg["FOB"] = {
+            "telefone": self.TRANSPORTADORA_FOB, "cot_id": criar_cotacao(conv_id, "FOB"),
+            "enviado_em": time.time(), "respondido": False,
+        }
+        self.fretes_pendentes[request_id] = {
+            "telefone": telefone,
+            "conv_id": conv_id,
+            "produto": produto,
+            "transportadoras": transportadoras_reg,
+            "status": "enviado",
+        }
+        await self.enviar_para_cliente(telefone,
+            f"Consultando fretes... (protocolo {request_id})")
+        # Envia para transportadoras A/B via sidebar
+        for t in TRANSPORTADORAS:
+            await self.solicitar_frete_transportadora(t, produto, ci, request_id)
+        # Envia para FOB via page.goto (pode nao estar na sidebar)
+        await self._enviar_fob_msg(produto, ci, request_id)
 
-    TRANSPORTADORA_FOB = "555199769477"
+    async def _enviar_fob_msg(self, produto, cliente_info: dict, request_id: str):
+        nome = cliente_info.get("nome", "N/I")
+        endereco = cliente_info.get("endereco", "N/I")
+        msg = (
+            f"SOLICITAÇÃO #{request_id}\n"
+            f"{'='*30}\n"
+            f"Cliente: {nome}\n"
+            f"Produto: {produto['nome']}\n"
+            f"NF: R$ {produto['preco']:.2f}\n"
+            f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
+            f"Endereco: {endereco}\n"
+            f"{'='*30}\n"
+            f"Favor informar VALOR DO FRETE + PRAZO DE ENTREGA.\n"
+            f"Ex: R$ 150,00 - 5 dias úteis"
+        )
+        url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
+        try:
+            await self.page.goto(url_fob, timeout=20000)
+            await asyncio.sleep(2)
+            caixa = await self._aguardar_input(10)
+            if caixa:
+                try:
+                    await caixa.fill(msg)
+                except Exception:
+                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                    await self.page.keyboard.type(msg, delay=20)
+                await self._clicar_enviar(usar_enter=True)
+                print(f"  -> FOB enviado #{request_id}", flush=True)
+                self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
+                self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            else:
+                print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
+        except Exception as e:
+            print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
+        finally:
+            await self.page.goto("https://web.whatsapp.com/", timeout=25000)
+            try:
+                await self.page.wait_for_selector('#side', timeout=15000)
+            except:
+                pass
+            await asyncio.sleep(2)
 
     async def _solicitar_frete_fob(self, conv_id: int, telefone: str):
         cliente = cliente_por_telefone(telefone)
@@ -1219,87 +1277,98 @@ class WhatsAppBot:
             await self.enviar_para_cliente(telefone, "Produto nao encontrado.")
             return
 
-        nome = cliente.get("nome", "N/I")
-        cpf = cliente.get("cpf", "N/I")
-        endereco = cliente.get("endereco", "N/I")
-        cidade = cliente.get("cidade", "N/I")
-        estado = cliente.get("estado", "N/I")
-        cep = cliente.get("cep", "N/I")
+        ci = {
+            "nome": cliente.get("nome", "N/I"),
+            "endereco": cliente.get("endereco", "N/I"),
+            "cidade": cliente.get("cidade", "N/I"),
+            "estado": cliente.get("estado", "N/I"),
+            "cep": cliente.get("cep", "N/I"),
+        }
+        request_id = self._gerar_id_frete()
+        cot_id = criar_cotacao(conv_id, "FOB")
+        self.fretes_pendentes[request_id] = {
+            "telefone": telefone,
+            "conv_id": conv_id,
+            "produto": produto,
+            "transportadoras": {
+                "FOB": {
+                    "telefone": self.TRANSPORTADORA_FOB, "cot_id": cot_id,
+                    "enviado_em": time.time(), "respondido": False,
+                },
+            },
+            "status": "enviado",
+        }
+        await self.enviar_para_cliente(telefone,
+            f"Consultando frete FOB... (protocolo {request_id})")
+        await self._enviar_fob_msg(produto, ci, request_id)
 
-        msg = (
-            f"NOVA SOLICITACAO DE FRETE:\n"
-            f"{'='*30}\n"
-            f"CLIENTE: {nome}\n"
-            f"WHATSAPP: {telefone}\n"
-            f"CPF/CNPJ: {cpf}\n"
-            f"PRODUTO: {produto['nome']}\n"
-            f"NF: R$ {produto['preco']:.2f}\n"
-            f"MEDIDAS: {produto['medidas']}\n"
-            f"PESO: {produto['peso']}\n"
-            f"EMBALAGEM: PLASTICO BOLHA\n"
-            f"ENDERECO: {endereco}\n"
-            f"{'='*30}\n"
-            f"VALOR DO FRETE FOB: [RESPONDA APENAS COM O VALOR, EX: 150,00]"
-        )
-        url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
+    async def _processar_fretes_pendentes(self):
+        if not self.fretes_pendentes:
+            return
+        raw = await self.avaliar("""
+            () => {
+                const mapa = {};
+                const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
+                rows.forEach(row => {
+                    const titleEl = row.querySelector('[title]');
+                    if (!titleEl) return;
+                    const nome = titleEl.getAttribute('title') || '';
+                    const tel = nome.replace(/\\D/g, '');
+                    if (!tel || tel.length < 10) return;
+                    const spans = row.querySelectorAll('span[dir]');
+                    let texto = '';
+                    for (const sp of spans) {
+                        if (sp.getAttribute('title') !== nome && sp.textContent.trim()) {
+                            texto = sp.textContent.trim();
+                        }
+                    }
+                    const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
+                                 row.querySelector('[aria-label*="nao lida"]') ||
+                                 row.querySelector('[aria-label*="unread"]');
+                    if (texto && badge) mapa[tel] = texto;
+                });
+                return JSON.stringify(mapa);
+            }
+        """)
         try:
-            await self.page.goto(url_fob, timeout=20000)
-            await asyncio.sleep(2)
-            caixa = await self._aguardar_input(10)
-            if caixa:
-                try:
-                    await caixa.fill(msg)
-                except Exception:
-                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                    await self.page.keyboard.type(msg, delay=20)
-                await self._clicar_enviar(usar_enter=True)
-                print(f"  -> FOB enviado para {self.TRANSPORTADORA_FOB}", flush=True)
-                self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
-                self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
-            else:
-                print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
-        except Exception as e:
-            print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
-        finally:
-            await self.page.goto("https://web.whatsapp.com/", timeout=25000)
-            try:
-                await self.page.wait_for_selector('#side', timeout=15000)
-            except:
-                pass
-            await asyncio.sleep(2)
+            chats_transp = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        trans_telefones = self._telefones_transportadoras()
+        # Inverte: telefone -> nome_transportadora
+        tel_para_nome = {v: k for k, v in trans_telefones.items()}
 
-        print(f"  [frete] Aguardando resposta da transportadora FOB para {safe(telefone)}...", flush=True)
-        inicio = time.time()
-        timeout = 300
-        vistos = set()
-        while time.time() - inicio < timeout:
-            await asyncio.sleep(5)
-            raw = await self.detectar_chats()
-            chats = json.loads(raw)
-            for chat in chats:
-                tel = chat.get("telefone", "")
-                if tel != self.TRANSPORTADORA_FOB:
+        for req_id, req in list(self.fretes_pendentes.items()):
+            if req["status"] != "enviado":
+                continue
+            for trans_nome, reg in req["transportadoras"].items():
+                if reg["respondido"]:
                     continue
-                if not chat.get("nao_lida"):
+                tel = reg["telefone"]
+                if tel not in chats_transp:
                     continue
-                chave = f"{tel}|{chat.get('texto', '')}"
-                if chave in vistos:
-                    continue
-                vistos.add(chave)
-                resp = chat.get("texto", "").strip()
+                resp = chats_transp[tel]
                 if not resp:
                     continue
+                dedup_key = f"{tel}|{resp}"
+                if dedup_key in self._respostas_frete_vistas:
+                    continue
+                self._respostas_frete_vistas.add(dedup_key)
                 valor = self.extrair_valor_frete(resp)
-                print(f"  [frete] Resposta FOB recebida: '{safe(resp[:60])}' -> valor: R$ {valor:.2f}", flush=True)
-                await self.enviar_para_cliente(telefone,
-                    f"Recebemos a cotação do frete!\n"
-                    f"Valor do Frete FOB: R$ {valor:.2f}\n"
-                    f"Total com produto: R$ {produto['preco'] + valor:.2f}")
-                criar_cotacao(conv_id, "FOB")
-                return
-        print(f"  [frete] Sem resposta da transportadora FOB para {safe(telefone)} apos {timeout}s", flush=True)
-        await self.enviar_para_cliente(telefone,
-            "Ainda nao recebemos o valor do frete. Assim que a transportadora responder, avisaremos.")
+                prazo = self.extrair_prazo(resp)
+                print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
+                reg["respondido"] = True
+                if reg.get("cot_id"):
+                    atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+                await self.enviar_para_cliente(req["telefone"],
+                    f"Frete {trans_nome} (protocolo {req_id}):\n"
+                    f"Valor: R$ {valor:.2f}\n"
+                    f"Prazo: {prazo or 'a confirmar'}\n"
+                    f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
+                    f"Deseja confirmar o pedido?")
+            # Remove se todas responderam
+            if all(t["respondido"] for t in req["transportadoras"].values()):
+                self.fretes_pendentes.pop(req_id, None)
 
     async def processar_mensagem(self, remetente: str, msg_texto: str, telefone: str = "", nome_sidebar: str = ""):
         try:
@@ -1536,20 +1605,55 @@ class WhatsAppBot:
                     return
 
             # --- CONVERSA LIVRE: usa Gemini ou fallback ---
-            try:
-                resposta = await asyncio.to_thread(gerar_resposta, historico)
-            except Exception as e:
-                print(f"[GEMINI] {safe(e)}")
-                agora_fb = time.time()
-                ult_fb = self.ultimo_fallback.get(telefone, 0)
-                if agora_fb - ult_fb > 3600:
-                    resposta = resposta_fallback(historico)
-                    self.ultimo_fallback[telefone] = agora_fb
+            # Pula Gemini para mensagens triviais (economiza cota)
+            msg_curta = msg_texto.strip().lower().rstrip("?!.")
+            triviais = {"ok", "sim", "não", "nao", "obrigado", "obrigada", "valeu",
+                        "brigado", "brigada", "blz", "beleza", "tudo bem", "tudo",
+                        "sim sim", "ok ok", "pode ser", "certo", "entendi", "show",
+                        "legal", "perfeito", "ótimo", "otimo", "bom", "hmm", "hum",
+                        "rs", "kkk", "haha", "lol", "nada", "blz blz", "tranquilo",
+                        "pode deixar", "fechou", "fechado"}
+            if msg_curta in triviais:
+                resposta = "😊 Por nada! Estou aqui para ajudar. É só me chamar quando precisar."
+                resposta_limpa = resposta
+                comando = None
+            else:
+                # Throttle por usuário: no máximo 1 chamada Gemini a cada 15s
+                ult_gem = self.ultimo_gemini.get(telefone, 0)
+                if time.time() - ult_gem < 15:
+                    resposta = "Estou processando sua solicitação, aguarde um momento..."
+                    resposta_limpa = resposta
+                    comando = None
                 else:
-                    resposta = "Desculpe, estou temporariamente offline. Tente novamente mais tarde."
+                    # Verifica cota diária global
+                    hoje = time.strftime("%Y-%m-%d")
+                    if self.gemini_diario_data != hoje:
+                        self.gemini_diario = 0
+                        self.gemini_diario_data = hoje
+                    if self.gemini_diario >= self.GEMINI_MAX_DIARIO:
+                        resposta = "Desculpe, atingi o limite diário de atendimentos. Tente novamente amanhã."
+                        resposta_limpa = resposta
+                        comando = None
+                        print(f"  [GEMINI] Limite diario atingido ({self.GEMINI_MAX_DIARIO})", flush=True)
+                    else:
+                        # Reduz histórico para 10 mensagens (vs 30 antes)
+                        historico = get_historico_conversa(conv_id, limite=10)
+                        try:
+                            resposta = await asyncio.to_thread(gerar_resposta, historico)
+                            self.ultimo_gemini[telefone] = time.time()
+                            self.gemini_diario += 1
+                        except Exception as e:
+                            print(f"[GEMINI] {safe(e)}")
+                            agora_fb = time.time()
+                            ult_fb = self.ultimo_fallback.get(telefone, 0)
+                            if agora_fb - ult_fb > 3600:
+                                resposta = resposta_fallback(historico)
+                                self.ultimo_fallback[telefone] = agora_fb
+                            else:
+                                resposta = "Desculpe, estou temporariamente offline. Tente novamente mais tarde."
 
-            comando = extrair_comando(resposta)
-            resposta_limpa = limpar_resposta(resposta)
+                        comando = extrair_comando(resposta)
+                        resposta_limpa = limpar_resposta(resposta)
 
             if resposta_limpa:
                 await self.enviar_para_cliente(telefone, resposta_limpa, nome_sidebar)
@@ -1602,8 +1706,18 @@ class WhatsAppBot:
         return 50.0
 
     def extrair_prazo(self, texto: str) -> str | None:
-        m = re.search(r"(\d+\s*dias?)", texto, re.IGNORECASE)
-        return m.group(0) if m else None
+        padroes = [
+            r"(\d+\s*dias?\s*úteis?)",
+            r"(\d+\s*dias?\s*corridos?)",
+            r"(\d+\s*dias?)",
+            r"(1\s*semana)",
+            r"(2\s*semanas?)",
+        ]
+        for p in padroes:
+            m = re.search(p, texto, re.IGNORECASE)
+            if m:
+                return m.group(0)
+        return None
 
     async def parar(self):
         if self.context:
