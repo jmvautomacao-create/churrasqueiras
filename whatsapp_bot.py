@@ -1013,7 +1013,7 @@ class WhatsAppBot:
     async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
         msg = (
-            f"SOLICITAÇÃO #{request_id}\n"
+            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE {request_id}\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
             f"Produto: {produto['nome']}\n"
@@ -1235,7 +1235,7 @@ class WhatsAppBot:
         nome = cliente_info.get("nome", "N/I")
         endereco = cliente_info.get("endereco", "N/I")
         msg = (
-            f"SOLICITAÇÃO #{request_id}\n"
+            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE {request_id}\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
             f"Produto: {produto['nome']}\n"
