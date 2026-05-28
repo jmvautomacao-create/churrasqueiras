@@ -120,7 +120,6 @@ class WhatsAppBot:
             msg = str(e).lower()
             if "context" in msg or "navigation" in msg or "target closed" in msg:
                 print(f"  -> Pagina perdida durante evaluate: {safe(str(e)[:60])}")
-                await self._recuperar_pagina()
             raise
 
     async def _recuperar_pagina(self):
@@ -1325,7 +1324,65 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        goto_base = "https://web.whatsapp.com/"
+        chats_raw = await self.avaliar("""
+            (mapaStr) => {
+                const mapa = JSON.parse(mapaStr);
+                const side = document.querySelector('#side') ||
+                             document.querySelector('[role="tabpanel"]');
+                if (!side) {
+                    const rows = document.querySelectorAll('[role="row"]');
+                    const resultado = [];
+                    for (let i = 0; i < rows.length && i < 30; i++) {
+                        const el = rows[i].querySelector('[title]');
+                        const nome = el ? el.getAttribute('title') : '';
+                        if (!nome || nome.length > 30 || nome === 'Filtrar conversas') continue;
+                        const spans = rows[i].querySelectorAll('span[dir]');
+                        let texto = '';
+                        const titulo = el.getAttribute('title') || '';
+                        for (const sp of spans) {
+                            if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {
+                                texto = sp.textContent.trim();
+                            }
+                        }
+                        if (!texto) continue;
+                        let telefone = nome.replace(/\\D/g, '');
+                        if (!telefone || telefone.length < 10) telefone = mapa[nome] || '';
+                        resultado.push({nome, texto, telefone});
+                    }
+                    return JSON.stringify(resultado);
+                }
+                const chats = side.querySelectorAll(':scope [role="row"]');
+                const resultado = [];
+                chats.forEach(chat => {
+                    const el = chat.querySelector('[title]');
+                    const nome = el ? el.getAttribute('title') : '';
+                    if (!nome || nome.length > 30 || nome === 'Filtrar conversas' || nome.startsWith('Filt')) return;
+                    const spans = chat.querySelectorAll('span[dir]');
+                    let texto = '';
+                    const titulo = el ? el.getAttribute('title') : '';
+                    for (const sp of spans) {
+                        if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {
+                            texto = sp.textContent.trim();
+                        }
+                    }
+                    if (!texto) return;
+                    let telefone = nome.replace(/\\D/g, '');
+                    if (!telefone || telefone.length < 10) telefone = mapa[nome] || '';
+                    resultado.push({nome, texto, telefone});
+                });
+                return JSON.stringify(resultado);
+            }
+        """, json.dumps(self.mapa_contatos))
+        try:
+            chats = json.loads(chats_raw)
+        except (json.JSONDecodeError, TypeError):
+            return
+        tel_para_texto = {}
+        for c in chats:
+            tel = c.get("telefone", "")
+            txt = c.get("texto", "")
+            if tel and len(tel) >= 12 and txt:
+                tel_para_texto[tel] = txt
         for req_id, req in list(self.fretes_pendentes.items()):
             if req["status"] != "enviado":
                 continue
@@ -1333,64 +1390,33 @@ class WhatsAppBot:
                 if reg["respondido"]:
                     continue
                 tel = reg["telefone"]
-                try:
-                    await self.page.goto(f"https://web.whatsapp.com/send/?phone={tel}", timeout=15000)
-                    try:
-                        await self.page.wait_for_selector('#main', timeout=12000)
-                    except:
-                        pass
-                    await asyncio.sleep(2)
-                    resp = await self.avaliar("""
-                        () => {
-                            const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
-                            if (!painel) return '';
-                            const msgs = painel.querySelectorAll(':scope .message-in');
-                            const usuarios = [];
-                            for (const el of msgs) {
-                                const textEl = el.querySelector('span[dir="ltr"], span[dir="auto"]');
-                                if (textEl && textEl.textContent.trim()) usuarios.push(textEl.textContent.trim());
-                            }
-                            if (usuarios.length === 0) return '';
-                            return usuarios[usuarios.length - 1];
-                        }
-                    """)
-                    await self.page.goto(goto_base, timeout=15000)
-                    await self.page.wait_for_selector('#side', timeout=10000)
-                    await asyncio.sleep(0.5)
-                    if not resp:
-                        continue
-                    dedup_key = f"{tel}|{resp}"
-                    if dedup_key in self._respostas_frete_vistas:
-                        continue
-                    self._respostas_frete_vistas.add(dedup_key)
-                    valor = self.extrair_valor_frete(resp)
-                    prazo = self.extrair_prazo(resp)
-                    prot_transp = self.extrair_protocolo_transportadora(resp)
-                    print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
-                    reg["respondido"] = True
-                    if reg.get("cot_id"):
-                        atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-                    msg_cliente = (
-                        f"Frete {trans_nome} (protocolo {req_id}):\n"
-                        f"Valor: R$ {valor:.2f}\n"
-                        f"Prazo: {prazo or 'a confirmar'}\n"
-                    )
-                    if prot_transp:
-                        msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
-                    msg_cliente += (
-                        f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
-                        f"Deseja confirmar o pedido?"
-                    )
-                    await self.enviar_para_cliente(req["telefone"], msg_cliente)
-                    atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
-                except Exception as e:
-                    print(f"  [frete] Erro ao verificar {trans_nome}: {safe(str(e)[:80])}", flush=True)
-                    await self.page.goto(goto_base, timeout=15000)
-                    try:
-                        await self.page.wait_for_selector('#side', timeout=10000)
-                    except:
-                        pass
-            # Remove se todas responderam
+                resp = tel_para_texto.get(tel)
+                if not resp:
+                    continue
+                dedup_key = f"{tel}|{resp}"
+                if dedup_key in self._respostas_frete_vistas:
+                    continue
+                self._respostas_frete_vistas.add(dedup_key)
+                valor = self.extrair_valor_frete(resp)
+                prazo = self.extrair_prazo(resp)
+                prot_transp = self.extrair_protocolo_transportadora(resp)
+                print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:80])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
+                reg["respondido"] = True
+                if reg.get("cot_id"):
+                    atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+                msg_cliente = (
+                    f"Frete {trans_nome} (protocolo {req_id}):\n"
+                    f"Valor: R$ {valor:.2f}\n"
+                    f"Prazo: {prazo or 'a confirmar'}\n"
+                )
+                if prot_transp:
+                    msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
+                msg_cliente += (
+                    f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
+                    f"Deseja confirmar o pedido?"
+                )
+                await self.enviar_para_cliente(req["telefone"], msg_cliente)
+                atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
             if all(t["respondido"] for t in req["transportadoras"].values()):
                 self.fretes_pendentes.pop(req_id, None)
 
