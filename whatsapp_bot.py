@@ -1346,7 +1346,13 @@ class WhatsAppBot:
         # Le via IndexedDB a ultima mensagem recebida de cada transportadora
         tels_json = json.dumps(list(tels_interesse))
         raw = await self.avaliar(f"""
-            async (tels) => {{
+            async (tels, selfNum) => {{
+                function extrairTel(remetente) {{
+                    if (!remetente) return '';
+                    if (typeof remetente === 'string') return remetente.split('@')[0] || '';
+                    if (typeof remetente === 'object' && remetente.user) return remetente.user;
+                    return '';
+                }}
                 const db = await new Promise(r => {{
                     const req = indexedDB.open('model-storage');
                     req.onsuccess = () => r(req.result);
@@ -1361,9 +1367,11 @@ class WhatsAppBot:
                 const ultimas = {{}};
                 for (const m of all) {{
                     if (!m.body || typeof m.body !== 'string') continue;
-                    const fromTel = (m.from || '').split('@')[0];
-                    if (telSet.has(fromTel)) {{
-                        ultimas[fromTel] = m.body;
+                    const fromTel = extrairTel(m.from);
+                    const toTel = extrairTel(m.to);
+                    const tel = fromTel || toTel;
+                    if (tel && tel !== selfNum && telSet.has(tel)) {{
+                        ultimas[tel] = m.body;
                     }}
                 }}
                 let out = {{}};
@@ -1372,7 +1380,7 @@ class WhatsAppBot:
                 }}
                 return JSON.stringify(out);
             }}
-        """, tels_json)
+        """, tels_json, SEU_NUMERO)
         try:
             tel_para_texto = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
