@@ -709,23 +709,32 @@ class WhatsAppBot:
                         return True
                     await asyncio.sleep(0.5)
             if telefone:
+                mapa_json = json.dumps(self.mapa_contatos)
                 for _ in range(3):
                     ok = await self.avaliar(f"""
-                        () => {{
+                        (mapa) => {{
                             const tel = {json.dumps(telefone)};
                             const rows = document.querySelectorAll('#side [role="row"]');
                             for (const row of rows) {{
                                 const titleEl = row.querySelector('[title]');
                                 if (!titleEl) continue;
-                                const titleTel = (titleEl.getAttribute('title') || '').replace(/\\D/g, '');
+                                const name = titleEl.getAttribute('title') || '';
+                                const titleTel = name.replace(/\\D/g, '');
+                                // Match by digits in title (unsaved contact)
                                 if (titleTel && (titleTel.endsWith(tel) || tel.endsWith(titleTel))) {{
+                                    row.click();
+                                    return true;
+                                }}
+                                // Match by name in mapa_contatos (saved contact)
+                                const phoneFromMapa = mapa[name];
+                                if (phoneFromMapa && (phoneFromMapa === tel || tel.endsWith(phoneFromMapa) || phoneFromMapa.endsWith(tel))) {{
                                     row.click();
                                     return true;
                                 }}
                             }}
                             return false;
                         }}
-                    """)
+                    """, self.mapa_contatos)
                     if ok:
                         await asyncio.sleep(0.4)
                         return True
@@ -1263,7 +1272,7 @@ class WhatsAppBot:
             self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
             return
         # Fallback: page.goto (se FOB nao estiver na sidebar)
-        print(f"  [frete] FOB sidebar, tentando navegacao direta...", flush=True)
+        print(f"  [frete] FOB nao encontrado na sidebar, navegando direto...", flush=True)
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
         try:
             await self.page.goto(url_fob, timeout=20000)
@@ -1283,13 +1292,6 @@ class WhatsAppBot:
                 print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
         except Exception as e:
             print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
-        finally:
-            await self.page.goto("https://web.whatsapp.com/", timeout=25000)
-            try:
-                await self.page.wait_for_selector('#side', timeout=15000)
-            except:
-                pass
-            await asyncio.sleep(2)
 
     async def _solicitar_frete_fob(self, conv_id: int, telefone: str):
         cliente = cliente_por_telefone(telefone)
