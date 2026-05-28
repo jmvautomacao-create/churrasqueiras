@@ -1008,7 +1008,7 @@ class WhatsAppBot:
         data = datetime.now().strftime("%Y%m%d")
         return f"FRETE-{data}-{self.proximo_id_frete:03d}"
 
-    async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str) -> str:
+    async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
         msg = (
             f"SOLICITAÇÃO #{request_id}\n"
@@ -1026,10 +1026,6 @@ class WhatsAppBot:
             f"PRAZO DE ENTREGA: "
         )
         await self.enviar_texto(transportadora["numero"], msg)
-        header_name = await self.avaliar(
-            "() => { const h = document.querySelector('#main header [title]'); return h ? h.getAttribute('title') : ''; }"
-        )
-        return header_name
 
     async def _enviar_folder(self, conv_id: int, telefone: str, produto: dict):
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
@@ -1229,9 +1225,7 @@ class WhatsAppBot:
             f"Consultando fretes... (protocolo {request_id})")
         # Envia para transportadoras A/B via sidebar
         for t in TRANSPORTADORAS:
-            nome_sidebar = await self.solicitar_frete_transportadora(t, produto, ci, request_id)
-            if nome_sidebar and request_id in self.fretes_pendentes:
-                self.fretes_pendentes[request_id]["transportadoras"][t["nome"]]["nome_sidebar"] = nome_sidebar
+            await self.solicitar_frete_transportadora(t, produto, ci, request_id)
         # Envia para FOB via page.goto (pode nao estar na sidebar)
         await self._enviar_fob_msg(produto, ci, request_id)
 
@@ -1267,12 +1261,6 @@ class WhatsAppBot:
                 print(f"  -> FOB enviado #{request_id}", flush=True)
                 self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
                 self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
-                # Record header name for later sidebar matching
-                header_name = await self.avaliar(
-                    "() => { const h = document.querySelector('#main header [title]'); return h ? h.getAttribute('title') : ''; }"
-                )
-                if header_name and request_id in self.fretes_pendentes:
-                    self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["nome_sidebar"] = header_name
             else:
                 print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
         except Exception as e:
@@ -1328,124 +1316,55 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        # Build matchers: for each pending request, collect data to identify
-        # the transportadora chat in the sidebar
-        matchers = []
+        goto_base = "https://web.whatsapp.com/"
         for req_id, req in list(self.fretes_pendentes.items()):
             if req["status"] != "enviado":
                 continue
             for trans_nome, reg in list(req["transportadoras"].items()):
                 if reg["respondido"]:
                     continue
-                matchers.append({
-                    "req_id": req_id,
-                    "trans_nome": trans_nome,
-                    "telefone": reg["telefone"],
-                    "nome_sidebar": reg.get("nome_sidebar", ""),
-                })
-        if not matchers:
-            return
-        print(f"  [frete] _processar_fretes_pendentes: {len(matchers)} matchers", flush=True)
-        for m in matchers:
-            print(f"    -> req={m['req_id']} trans={m['trans_nome']} nome_sidebar='{safe(m['nome_sidebar'][:30])}' tel={m['telefone']}", flush=True)
-        raw = await self.avaliar(f"""
-            (lista) => {{
-                const resultado = {{}};
-                const debug = [];
-                const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
-                rows.forEach(row => {{
-                    const titleEl = row.querySelector('[title]');
-                    if (!titleEl) return;
-                    const nome = titleEl.getAttribute('title') || '';
-                    const nomeTel = nome.replace(/\\D/g, '');
-                    const spans = row.querySelectorAll('span[dir]');
-                    let texto = '';
-                    for (const sp of spans) {{
-                        if (sp.getAttribute('title') !== nome && sp.textContent.trim()) {{
-                            texto = sp.textContent.trim();
-                        }}
-                    }}
-                    if (!texto) return;
-                    const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
-                                 row.querySelector('[aria-label*="nao lida"]') ||
-                                 row.querySelector('[aria-label*="unread"]');
-                    debug.push({{nome, texto: texto.slice(0,80), badge: !!badge}});
-                    if (!badge) return;
-                    // Try to match this row against any matcher
-                    for (const m of lista) {{
-                        if (resultado[m.req_id]) continue;
-                        // Strategy 1: saved sidebar name
-                        if (m.nome_sidebar && nome === m.nome_sidebar) {{
-                            resultado[m.req_id] = texto;
-                            break;
-                        }}
-                        // Strategy 2: phone digits in title
-                        if (nomeTel && (nomeTel.endsWith(m.telefone) || m.telefone.endsWith(nomeTel))) {{
-                            resultado[m.req_id] = texto;
-                            break;
-                        }}
-                        // Strategy 3: request ID in text preview (with or without #)
-                        if (texto.includes('#' + m.req_id) || texto.includes(m.req_id)) {{
-                            resultado[m.req_id] = texto;
-                            break;
-                        }}
-                    }}
-                }});
-                return JSON.stringify({{resultado, debug}});
-            }}
-        """, matchers)
-        try:
-            parsed = json.loads(raw)
-            chats_por_req = parsed.get("resultado", {})
-            debug_rows = parsed.get("debug", [])
-        except json.JSONDecodeError:
-            return
-        if debug_rows:
-            for d in debug_rows:
-                print(f"    [frete debug] nome='{safe(d['nome'][:25])}' badge={d['badge']} texto='{safe(d['texto'][:60])}'", flush=True)
-
-        for req_id, resp in chats_por_req.items():
-            req = self.fretes_pendentes.get(req_id)
-            if not req:
-                continue
-            # Find which transportadora matched (prefer by nome_sidebar, then telefone)
-            matched = None
-            for trans_nome, reg in req["transportadoras"].items():
-                if reg["respondido"]:
-                    continue
-                reg_nome = reg.get("nome_sidebar", "")
-                if reg_nome and resp and reg_nome in resp:
-                    matched = trans_nome
-                    break
-                if resp and reg["telefone"] in resp:
-                    matched = trans_nome
-                    break
-            if not matched:
-                # Default to first unresponded
-                for trans_nome, reg in req["transportadoras"].items():
-                    if not reg["respondido"]:
-                        matched = trans_nome
-                        break
-            if not matched:
-                continue
-            reg = req["transportadoras"][matched]
-            dedup_key = f"{reg['telefone']}|{resp}"
-            if dedup_key in self._respostas_frete_vistas:
-                continue
-            self._respostas_frete_vistas.add(dedup_key)
-            valor = self.extrair_valor_frete(resp)
-            prazo = self.extrair_prazo(resp)
-            print(f"  [frete] Resposta {matched} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
-            reg["respondido"] = True
-            if reg.get("cot_id"):
-                atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-            await self.enviar_para_cliente(req["telefone"],
-                f"Frete {matched} (protocolo {req_id}):\n"
-                f"Valor: R$ {valor:.2f}\n"
-                f"Prazo: {prazo or 'a confirmar'}\n"
-                f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
-                f"Deseja confirmar o pedido?")
-            atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+                tel = reg["telefone"]
+                try:
+                    await self.page.goto(f"https://web.whatsapp.com/send/?phone={tel}", timeout=15000)
+                    await asyncio.sleep(1.5)
+                    resp = await self.avaliar("""
+                        () => {
+                            const msgs = document.querySelectorAll('#main .message-in .copyable-text');
+                            if (!msgs.length) return '';
+                            const last = msgs[msgs.length - 1];
+                            const text = last.textContent.trim();
+                            return text || '';
+                        }
+                    """)
+                    await self.page.goto(goto_base, timeout=15000)
+                    await self.page.wait_for_selector('#side', timeout=10000)
+                    await asyncio.sleep(0.5)
+                    if not resp:
+                        continue
+                    dedup_key = f"{tel}|{resp}"
+                    if dedup_key in self._respostas_frete_vistas:
+                        continue
+                    self._respostas_frete_vistas.add(dedup_key)
+                    valor = self.extrair_valor_frete(resp)
+                    prazo = self.extrair_prazo(resp)
+                    print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
+                    reg["respondido"] = True
+                    if reg.get("cot_id"):
+                        atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+                    await self.enviar_para_cliente(req["telefone"],
+                        f"Frete {trans_nome} (protocolo {req_id}):\n"
+                        f"Valor: R$ {valor:.2f}\n"
+                        f"Prazo: {prazo or 'a confirmar'}\n"
+                        f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
+                        f"Deseja confirmar o pedido?")
+                    atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+                except Exception as e:
+                    print(f"  [frete] Erro ao verificar {trans_nome}: {safe(str(e)[:80])}", flush=True)
+                    await self.page.goto(goto_base, timeout=15000)
+                    try:
+                        await self.page.wait_for_selector('#side', timeout=10000)
+                    except:
+                        pass
             # Remove se todas responderam
             if all(t["respondido"] for t in req["transportadoras"].values()):
                 self.fretes_pendentes.pop(req_id, None)
