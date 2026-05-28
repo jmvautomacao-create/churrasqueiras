@@ -1474,11 +1474,18 @@ class WhatsAppBot:
                 return
 
             if etapa == "frete_cpf":
-                cpf_cnpj = msg_texto.strip()
+                cpf_cnpj_raw = msg_texto.strip()
                 msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != cpf_cnpj:
-                    print(f"  [frete] sidebar perdeu '{safe(cpf_cnpj)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    cpf_cnpj = msg_anterior
+                if msg_anterior and msg_anterior != cpf_cnpj_raw:
+                    print(f"  [frete] sidebar perdeu '{safe(cpf_cnpj_raw)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    cpf_cnpj_raw = msg_anterior
+                digitos = re.sub(r"\D", "", cpf_cnpj_raw)
+                if not (11 <= len(digitos) <= 14):
+                    await self.enviar_para_cliente(telefone,
+                        "CPF ou CNPJ invalido. Digite apenas numeros (11 digitos para CPF, 14 para CNPJ):")
+                    salvar_mensagem(conv_id, "agente", "CPF ou CNPJ invalido.")
+                    return
+                cpf_cnpj = digitos
                 atualizar_cliente(cliente_id, cpf_cnpj=cpf_cnpj)
                 atualizar_etapa_conversa(conv_id, "frete_endereco")
                 print(f"  [frete] cpf_cnpj salvo: {safe(cpf_cnpj)} -> etapa frete_endereco", flush=True)
