@@ -1319,7 +1319,8 @@ class WhatsAppBot:
         raw = await self.avaliar(f"""
             (payload) => {{
                 const mapa = payload.mapa;
-                const transSet = new Set(payload.trans);
+                const transPhones = payload.trans;
+                const transSet = new Set(transPhones);
                 const resultado = {{}};
                 const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
                 rows.forEach(row => {{
@@ -1329,6 +1330,19 @@ class WhatsAppBot:
                     let tel = nome.replace(/\\D/g, '');
                     if (!tel || tel.length < 10) {{
                         tel = mapa[nome] || '';
+                    }}
+                    // Fallback: match phone digits against transportadora numbers
+                    if (!tel || !transSet.has(tel)) {{
+                        const nomeDigits = nome.replace(/\\D/g, '');
+                        if (nomeDigits.length >= 4) {{
+                            tel = '';
+                            for (const t of transPhones) {{
+                                if (nomeDigits.endsWith(t) || t.endsWith(nomeDigits)) {{
+                                    tel = t;
+                                    break;
+                                }}
+                            }}
+                        }}
                     }}
                     if (!tel || !transSet.has(tel)) return;
                     const spans = row.querySelectorAll('span[dir]');
