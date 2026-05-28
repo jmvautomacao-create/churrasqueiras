@@ -1008,7 +1008,7 @@ class WhatsAppBot:
     def _gerar_id_frete(self) -> str:
         self.proximo_id_frete += 1
         data = datetime.now().strftime("%Y%m%d")
-        return f"FRETE-{data}-{self.proximo_id_frete:03d}"
+        return f"{data}-{self.proximo_id_frete:03d}"
 
     async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
