@@ -1555,10 +1555,20 @@ class WhatsAppBot:
 
             # --- FRETE: aguardando resposta da transportadora ---
             if etapa == "frete_aguardando":
-                await self.enviar_para_cliente(telefone,
-                    "Ainda estou aguardando a resposta da transportadora. Assim que receber, aviso voce!")
-                self.processando.pop(telefone, None)
-                return
+                # Só bloqueia se ainda houver frete pendente para este telefone
+                tem_pendente = any(
+                    req["telefone"] == telefone
+                    for req in self.fretes_pendentes.values()
+                    if req["status"] == "enviado" and not all(t["respondido"] for t in req["transportadoras"].values())
+                )
+                if not tem_pendente:
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                    etapa = "menu_principal"
+                else:
+                    await self.enviar_para_cliente(telefone,
+                        "Ainda estou aguardando a resposta da transportadora. Assim que receber, aviso voce!")
+                    self.processando.pop(telefone, None)
+                    return
 
             # --- FRETE: aguardando confirmacao do cliente ---
             if etapa == "frete_confirmar":
