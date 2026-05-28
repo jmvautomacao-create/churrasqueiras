@@ -62,9 +62,15 @@ class WhatsAppBot:
 
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir, headless=False,
+            args=['--window-position=0,0', '--window-size=1280,900'],
         )
         self.page = await self.context.new_page()
         await self.page.goto("https://web.whatsapp.com")
+        # Trazer janela para o foco e garantir posição no monitor principal
+        try:
+            await self.avaliar("() => { window.focus(); window.moveTo(0, 0); window.resizeTo(1280, 900); }")
+        except:
+            pass
         print("Aguardando login. Se ja estiver logado, isso leva segundos.")
 
         for i in range(120):
@@ -147,6 +153,9 @@ class WhatsAppBot:
             pass
 
     async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int, nome_sidebar: str = "") -> bool:
+        chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
+        for k in chaves:
+            self.ultimo_visto_texto.pop(k, None)
         from produtos import menu_interativo
         texto = menu_interativo()
         ok = await self.enviar_para_cliente(telefone, texto, nome_sidebar)
@@ -165,6 +174,9 @@ class WhatsAppBot:
         pass
 
     async def _iniciar_apresentacao_submenu(self, telefone: str, conv_id: int, produto: dict):
+        chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
+        for k in chaves:
+            self.ultimo_visto_texto.pop(k, None)
         from produtos import submenu_produto
         texto = submenu_produto(produto)
         await self.enviar_para_cliente(telefone, texto)
@@ -215,7 +227,7 @@ class WhatsAppBot:
         self.continuar_submenu[telefone] = {"conv_id": conv_id, "produto_id": produto_id, "nome_sidebar": nome_sidebar}
         atualizar_etapa_conversa(conv_id, "submenu_continuar")
         await self.enviar_para_cliente(telefone,
-            "Selecione uma Opcao abaixo:\n[1] Continuar neste produto\n[2] Voltar ao Menu Principal",
+            "Selecione uma opção abaixo:\n[f] Continuar neste produto\n[g] Voltar ao Menu Principal",
             nome_sidebar)
 
     async def _atualizar_mapa_contatos(self):
@@ -435,6 +447,12 @@ class WhatsAppBot:
                     if not nome_raw or nome_raw == "DEBUG" or nome_raw.startswith("Filt"):
                         continue
 
+                    # Transportadora FOB: ignorar no loop principal, processada apenas em _solicitar_frete_fob
+                    if telefone == self.TRANSPORTADORA_FOB:
+                        if c % 30 == 0:
+                            print(f"  [{c} SKIP] {safe(nome_raw)}: transportadora FOB ignorada no loop principal")
+                        continue
+
                     # Dedup intra-ciclo: chats duplicados (ex: role="row" aninhado)
                     if nome_key in vistos_ciclo:
                         continue
@@ -465,12 +483,7 @@ class WhatsAppBot:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto ja processado ({agora-ult_visto:.0f}s atras)")
                             continue
 
-                    # Pula se o bot acabou de enviar mensagem pra este chat
-                    if self.ultimo_envio.get(telefone, 0) > agora - 10:
-                        if c % 30 == 0:
-                            env_ha = agora - self.ultimo_envio.get(telefone, 0)
-                            print(f"  [{c} SKIP] {safe(nome_raw)}: envio recente ({env_ha:.1f}s)")
-                        continue
+                    # Pula se o texto da sidebar for igual ao que o bot acabou de enviar
                     ultimo_env = self.ultimo_envio_texto.get(telefone, "")
                     if texto and ultimo_env:
                         texto_norm = re.sub(r'\s+', ' ', texto).strip()
@@ -600,7 +613,8 @@ class WhatsAppBot:
                         () => {
                             const spans = document.querySelectorAll('span[data-icon="send"]');
                             for (const sp of spans) {
-                                if (sp.offsetParent !== null) return false;
+                                const r = sp.getBoundingClientRect();
+                                if (r.width > 0 && r.height > 0) return false;
                             }
                             return true;
                         }
@@ -612,10 +626,11 @@ class WhatsAppBot:
 
             ok = await self.avaliar("""
                 () => {
+                    const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
                     const botoes = document.querySelectorAll('button');
                     for (const btn of botoes) {
                         const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        if ((label.includes('enviar') || label.includes('send')) && btn.offsetParent !== null) {
+                        if ((label.includes('enviar') || label.includes('send')) && vis(btn)) {
                             btn.click();
                             return true;
                         }
@@ -623,13 +638,13 @@ class WhatsAppBot:
                     const spans = document.querySelectorAll('span[data-icon="send"]');
                     for (const sp of spans) {
                         const pai = sp.closest('button') || sp.parentElement;
-                        if (pai && pai.offsetParent !== null) { pai.click(); return true; }
-                        if (sp.offsetParent !== null) { sp.click(); return true; }
+                        if (pai && vis(pai)) { pai.click(); return true; }
+                        if (vis(sp)) { sp.click(); return true; }
                     }
                     const divs = document.querySelectorAll('div[role="button"]');
                     for (const d of divs) {
                         const label = (d.getAttribute('aria-label') || '').toLowerCase();
-                        if ((label.includes('enviar') || label.includes('send')) && d.offsetParent !== null) {
+                        if ((label.includes('enviar') || label.includes('send')) && vis(d)) {
                             d.click(); return true;
                         }
                     }
@@ -703,21 +718,50 @@ class WhatsAppBot:
         except Exception as e:
             print(f"  [sidebar erro] {safe(str(e)[:80])}", flush=True)
             return False
+
+    async def _chat_ja_aberto(self, nome: str) -> bool:
+        if not nome:
+            return False
+        alvo = json.dumps(nome[:80])
+        return await self.avaliar(f"""
+            () => {{
+                const h = document.querySelector('#main header');
+                if (!h) return false;
+                const el = h.querySelector('[title]');
+                if (!el) return false;
+                const title = (el.getAttribute('title') || '').trim();
+                if (!title) return false;
+                const norm = s => s.normalize('NFKC').replace(/[\\s\\u00a0\\u200b\\u200c\\u200d\\ufeff]+/g, ' ').trim();
+                const alvo = {alvo};
+                return norm(title).includes(norm(alvo)) || norm(alvo).includes(norm(title));
+            }}
+        """)
+
     async def enviar_texto(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
         try:
-            # Always open the correct chat first (prevents sending to wrong contact when
-            # a previous chat's input field is still visible)
             if not nome_sidebar:
                 nome_sidebar = next((n for n, t in self.mapa_contatos.items() if t == numero), "")
             nomes = [nome_sidebar] if nome_sidebar else []
             nomes += [n for n, t in self.mapa_contatos.items() if t == numero]
             chat_aberto = False
+            # Fast path: check if current chat is already the target
             for nome in nomes:
                 if not nome:
                     continue
-                if await self._abrir_chat_sidebar(nome, numero):
+                if await self._chat_ja_aberto(nome):
                     chat_aberto = True
                     break
+            if not chat_aberto:
+                for nome in nomes:
+                    if not nome:
+                        continue
+                    if await self._abrir_chat_sidebar(nome, numero):
+                        chat_aberto = True
+                        break
+            if not chat_aberto:
+                # Ultimo recurso: busca por telefone diretamente
+                if await self._abrir_chat_sidebar(telefone=numero):
+                    chat_aberto = True
             if not chat_aberto:
                 print(f"  -> Nao foi possivel abrir chat para {numero}", flush=True)
                 return False
@@ -748,29 +792,27 @@ class WhatsAppBot:
             return False
 
     async def _clicar_anexar(self):
-        return await self.avaliar("""
-            () => {
-                const btns = document.querySelectorAll('button');
-                for (const b of btns) {
-                    const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                    if ((label.includes('anexar') || label.includes('attach')) && b.offsetParent !== null) {
-                        b.click(); return true;
-                    }
-                }
-                const divs = document.querySelectorAll('[data-testid="attach-file"]');
-                for (const d of divs) { if (d.offsetParent !== null) { d.click(); return true; } }
-                return false;
-            }
-        """)
+        btn = self.page.locator('button[aria-label="Anexar"], button[aria-label="Attach"], [data-testid="attach-file"]').first
+        if await btn.count() == 0:
+            return False
+        try:
+            await btn.wait_for(state="visible", timeout=5000)
+            await btn.click()
+            return True
+        except:
+            pass
+        return False
 
     async def _enviar_midia_como_foto(self, caminho: str):
-        # Estrategia A: tenta foto ampliavel via file chooser
         await self._clicar_anexar()
         await asyncio.sleep(0.5)
         tem_pv = await self.avaliar("""
             () => {
-                const el = document.querySelector('[data-testid="photo-video"]');
-                return !!el && el.offsetParent !== null;
+                const el = document.querySelector('[data-testid="photo-video"]') ||
+                           document.querySelector('button[aria-label="Fotos e vídeos"], button[aria-label="Photos & Videos"]');
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
             }
         """)
         if tem_pv:
@@ -778,7 +820,11 @@ class WhatsAppBot:
                 try:
                     async with self.page.expect_file_chooser(timeout=5000) as fc_info:
                         await self.avaliar("""
-                            () => { document.querySelector('[data-testid="photo-video"]').click(); }
+                            () => {
+                                const el = document.querySelector('[data-testid="photo-video"]') ||
+                                           document.querySelector('button[aria-label="Fotos e vídeos"], button[aria-label="Photos & Videos"]');
+                                if (el) el.click();
+                            }
                         """)
                         await asyncio.sleep(0.3)
                     fc = await fc_info.value
@@ -801,43 +847,71 @@ class WhatsAppBot:
         return False
 
     async def _enviar_midia_como_documento(self, caminho: str):
-        try:
-            async with self.page.expect_file_chooser(timeout=5000) as fc_info:
-                await self._clicar_anexar()
-                await asyncio.sleep(0.5)
-                tem_doc = await self.avaliar("""
-                    () => { const el = document.querySelector('[data-testid="attach-document"]'); return !!el && el.offsetParent !== null; }
-                """)
-                if not tem_doc:
-                    return False
+        tem_paperclip = await self.page.locator(
+            'button[aria-label="Anexar"], button[aria-label="Attach"], [data-testid="attach-file"]'
+        ).first.count() > 0
+        if tem_paperclip:
+            for tentativa in range(2):
+                try:
+                    if not await self._clicar_anexar():
+                        continue
+                    await asyncio.sleep(1)
+                    doc = self.page.locator(
+                        'button[aria-label="Documento"], button[aria-label="Document"], '
+                        'button[aria-label="Documents"]'
+                    ).first
+                    try:
+                        await doc.wait_for(state="visible", timeout=5000)
+                    except:
+                        continue
+                    async with self.page.expect_file_chooser(timeout=10000) as fc_info:
+                        await doc.click()
+                        await asyncio.sleep(0.3)
+                    fc = await fc_info.value
+                    await fc.set_files(str(caminho))
+                    await asyncio.sleep(3)
+                    return True
+                except Exception as e:
+                    print(f"  -> Tentativa documento {tentativa+1}: {safe(str(e)[:60])}")
+        # Fallback: modificar accept do input e setar arquivo diretamente
+        for tentativa in range(2):
+            try:
                 await self.avaliar("""
-                    () => { const el = document.querySelector('[data-testid="attach-document"]'); if (el) el.click(); }
+                    () => {
+                        const inp = document.querySelector('input[type="file"]');
+                        if (inp) inp.setAttribute('accept', '*/*');
+                    }
                 """)
-                await asyncio.sleep(0.3)
-            fc = await fc_info.value
-            await fc.set_files(str(caminho))
-            await asyncio.sleep(3)
-            return True
-        except Exception:
-            pass
+                await asyncio.sleep(0.2)
+                await self.page.locator('input[type="file"]').first.set_input_files(str(caminho), timeout=5000)
+                await asyncio.sleep(3)
+                return True
+            except:
+                await asyncio.sleep(1)
         return False
 
-    async def enviar_midia(self, numero: str, caminho: str, legenda: str = ""):
+    async def enviar_midia(self, numero: str, caminho: str, legenda: str = "", force_document: bool = False):
         try:
-            # Always open the correct chat first
             chat_aberto = False
             nomes = list(dict.fromkeys(n for n, t in self.mapa_contatos.items() if t == numero))
+            # Fast path: check if current chat is already the target
             for nome in nomes:
                 if not nome:
                     continue
-                if await self._abrir_chat_sidebar(nome, numero):
+                if await self._chat_ja_aberto(nome):
                     chat_aberto = True
                     break
             if not chat_aberto:
-                # Tentar fallback apenas por telefone
-                if not await self._abrir_chat_sidebar(telefone=numero):
-                    print(f"  -> Nao foi possivel abrir chat para midia {numero}", flush=True)
-                    return
+                for nome in nomes:
+                    if not nome:
+                        continue
+                    if await self._abrir_chat_sidebar(nome, numero):
+                        chat_aberto = True
+                        break
+                if not chat_aberto:
+                    if not await self._abrir_chat_sidebar(telefone=numero):
+                        print(f"  -> Nao foi possivel abrir chat para midia {numero}", flush=True)
+                        return
             await asyncio.sleep(0.5)
 
             tem_input = await self.page.query_selector(self.SELETOR_INPUT)
@@ -846,21 +920,36 @@ class WhatsAppBot:
                 return
 
             is_img = Path(caminho).suffix.lower() in (".jpg", ".jpeg", ".png")
+            is_video = Path(caminho).suffix.lower() in (".mp4", ".mov")
             ok = False
 
-            if is_img:
+            if not force_document and (is_img or is_video):
                 ok = await self._enviar_midia_como_foto(caminho)
                 if not ok:
                     print("  -> Fallback: enviando como documento")
-                    await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                    await asyncio.sleep(3)
-                    ok = True
+                    ok = await self._enviar_midia_como_documento(caminho)
+                if not ok:
+                    print("  -> Fallback: input direto")
+                    try:
+                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                        await asyncio.sleep(3)
+                        ok = True
+                    except:
+                        pass
             else:
                 ok = await self._enviar_midia_como_documento(caminho)
                 if not ok:
-                    await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                    await asyncio.sleep(3)
-                    ok = True
+                    print("  -> Fallback: input direto")
+                    try:
+                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                        await asyncio.sleep(3)
+                        ok = True
+                    except:
+                        pass
+
+            if not ok:
+                print(f"  -> Nao foi possivel anexar: {Path(caminho).name}")
+                return
 
             if legenda:
                 cap = await self.page.query_selector('[data-testid="caption-input"]')
@@ -873,13 +962,22 @@ class WhatsAppBot:
                         await self.page.keyboard.type(legenda)
                 await asyncio.sleep(0.5)
 
-            if await self._clicar_enviar(15, usar_enter=True):
+            if is_video:
+                if await self._clicar_enviar(20, usar_enter=False):
+                    print(f"  -> Midia enviada: {Path(caminho).name}")
+                    nome_midia = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
+                    if nome_midia:
+                        self.ultimo_texto_chat[self._n(nome_midia)] = f"📷 {Path(caminho).name}"
+                    await asyncio.sleep(1)
+                    return
+            elif await self._clicar_enviar(15, usar_enter=True):
                 print(f"  -> Midia enviada: {Path(caminho).name}")
                 nome_midia = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
                 if nome_midia:
                     self.ultimo_texto_chat[self._n(nome_midia)] = f"📷 {Path(caminho).name}"
                 await asyncio.sleep(1)
                 return
+
             print(f"  -> Falha ao enviar midia: {Path(caminho).name}")
         except Exception as e:
             print(f"[ERRO MIDIA] {safe(e)}")
@@ -887,12 +985,12 @@ class WhatsAppBot:
     async def enviar_para_cliente(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
         return await self.enviar_texto(numero, texto, nome_sidebar)
 
-    async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = ""):
-        await self.enviar_midia(numero, caminho, legenda)
+    async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = "", force_document: bool = False):
+        await self.enviar_midia(numero, caminho, legenda, force_document)
 
     async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict):
         msg = (
-            f"Ola {transportadora['nome']}, solicitacao de cotacao de frete:\n"
+            f"Ola {transportadora['nome']}, solicitação de cotação de frete:\n"
             f"Produto: {produto['nome']}\n"
             f"Dimensoes: {produto['medidas']}  Peso: {produto['peso']}\n"
             f"Endereco: {cliente_info.get('endereco', 'N/I')} - "
@@ -924,7 +1022,7 @@ class WhatsAppBot:
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
         folder = md / "folder.jpg"
         if folder.exists():
-            await self.enviar_midia_para_cliente(telefone, folder, produto["nome"])
+            await self.enviar_midia_para_cliente(telefone, folder, produto["nome"], force_document=True)
             salvar_mensagem(conv_id, "agente", "[folder.jpg]", "foto")
         else:
             await self.enviar_para_cliente(telefone, "Folder nao disponivel para este produto.")
@@ -943,7 +1041,7 @@ class WhatsAppBot:
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
         videos = [f for f in md.glob("*") if f.suffix.lower() in (".mp4", ".mov")]
         if videos:
-            await self.enviar_midia_para_cliente(telefone, videos[0], produto["nome"])
+            await self.enviar_midia_para_cliente(telefone, videos[0], produto["nome"], force_document=True)
             salvar_mensagem(conv_id, "agente", f"[video: {videos[0].name}]", "video")
         else:
             await self.enviar_para_cliente(telefone, "Video nao disponivel para este produto.")
@@ -1030,10 +1128,11 @@ class WhatsAppBot:
             ("ESTADO", estado),
             ("CEP", cep),
             ("PRODUTO", produto["nome"] if produto else "N/I"),
-            ("PRECO", f"R$ {produto['preco']:.2f}" if produto else "N/I"),
-            ("MEDIDAS", produto["medidas"] if produto else "N/I"),
+            ("VALOR DA NF", f"R$ {produto['preco']:.2f}" if produto else "N/I"),
+            ("MEDIDAS DOS VOLUMES", produto["medidas"] if produto else "N/I"),
+            ("EMBALAGEM", "PLÁSTICO BOLHA"),
             ("PESO", produto["peso"] if produto else "N/I"),
-            ("VALOR DO FRETE", ""),
+            ("VALOR DO FRETE FOB", ""),
             ("STATUS", "Pendente"),
         ]
         wb = Workbook()
@@ -1041,6 +1140,10 @@ class WhatsAppBot:
         ws.append(cabecalhos)
         for campo, valor in dados:
             ws.append([campo, valor])
+        from openpyxl.utils import get_column_letter
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col) + 2
+            ws.column_dimensions[get_column_letter(col[0].column)].width = max_len
         wb.save(caminho)
         print(f"  -> Solicitacao salva: {nome_arquivo}", flush=True)
 
@@ -1098,6 +1201,105 @@ class WhatsAppBot:
                 atualizar_cotacao(cot_id, status="sem_resposta")
                 await self.enviar_para_cliente(telefone,
                     f"Nao recebi retorno da {t['nome']} ainda. Assim que responder, aviso.")
+
+    TRANSPORTADORA_FOB = "555199769477"
+
+    async def _solicitar_frete_fob(self, conv_id: int, telefone: str):
+        cliente = cliente_por_telefone(telefone)
+        if not cliente:
+            await self.enviar_para_cliente(telefone, "Erro ao recuperar seus dados.")
+            return
+        conversa = get_conversa_ativa(telefone)
+        produto_id = (conversa or {}).get("produto_interesse_id")
+        if not produto_id:
+            await self.enviar_para_cliente(telefone, "Produto nao identificado.")
+            return
+        produto = produto_por_id(produto_id)
+        if not produto:
+            await self.enviar_para_cliente(telefone, "Produto nao encontrado.")
+            return
+
+        nome = cliente.get("nome", "N/I")
+        cpf = cliente.get("cpf", "N/I")
+        endereco = cliente.get("endereco", "N/I")
+        cidade = cliente.get("cidade", "N/I")
+        estado = cliente.get("estado", "N/I")
+        cep = cliente.get("cep", "N/I")
+
+        msg = (
+            f"NOVA SOLICITACAO DE FRETE:\n"
+            f"{'='*30}\n"
+            f"CLIENTE: {nome}\n"
+            f"WHATSAPP: {telefone}\n"
+            f"CPF/CNPJ: {cpf}\n"
+            f"PRODUTO: {produto['nome']}\n"
+            f"NF: R$ {produto['preco']:.2f}\n"
+            f"MEDIDAS: {produto['medidas']}\n"
+            f"PESO: {produto['peso']}\n"
+            f"EMBALAGEM: PLASTICO BOLHA\n"
+            f"ENDERECO: {endereco}\n"
+            f"{'='*30}\n"
+            f"VALOR DO FRETE FOB: [RESPONDA APENAS COM O VALOR, EX: 150,00]"
+        )
+        url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
+        try:
+            await self.page.goto(url_fob, timeout=20000)
+            await asyncio.sleep(2)
+            caixa = await self._aguardar_input(10)
+            if caixa:
+                try:
+                    await caixa.fill(msg)
+                except Exception:
+                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                    await self.page.keyboard.type(msg, delay=20)
+                await self._clicar_enviar(usar_enter=True)
+                print(f"  -> FOB enviado para {self.TRANSPORTADORA_FOB}", flush=True)
+                self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
+                self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            else:
+                print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
+        except Exception as e:
+            print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
+        finally:
+            await self.page.goto("https://web.whatsapp.com/", timeout=25000)
+            try:
+                await self.page.wait_for_selector('#side', timeout=15000)
+            except:
+                pass
+            await asyncio.sleep(2)
+
+        print(f"  [frete] Aguardando resposta da transportadora FOB para {safe(telefone)}...", flush=True)
+        inicio = time.time()
+        timeout = 300
+        vistos = set()
+        while time.time() - inicio < timeout:
+            await asyncio.sleep(5)
+            raw = await self.detectar_chats()
+            chats = json.loads(raw)
+            for chat in chats:
+                tel = chat.get("telefone", "")
+                if tel != self.TRANSPORTADORA_FOB:
+                    continue
+                if not chat.get("nao_lida"):
+                    continue
+                chave = f"{tel}|{chat.get('texto', '')}"
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+                resp = chat.get("texto", "").strip()
+                if not resp:
+                    continue
+                valor = self.extrair_valor_frete(resp)
+                print(f"  [frete] Resposta FOB recebida: '{safe(resp[:60])}' -> valor: R$ {valor:.2f}", flush=True)
+                await self.enviar_para_cliente(telefone,
+                    f"Recebemos a cotação do frete!\n"
+                    f"Valor do Frete FOB: R$ {valor:.2f}\n"
+                    f"Total com produto: R$ {produto['preco'] + valor:.2f}")
+                criar_cotacao(conv_id, "FOB")
+                return
+        print(f"  [frete] Sem resposta da transportadora FOB para {safe(telefone)} apos {timeout}s", flush=True)
+        await self.enviar_para_cliente(telefone,
+            "Ainda nao recebemos o valor do frete. Assim que a transportadora responder, avisaremos.")
 
     async def processar_mensagem(self, remetente: str, msg_texto: str, telefone: str = "", nome_sidebar: str = ""):
         try:
@@ -1197,10 +1399,6 @@ class WhatsAppBot:
                 cliente_completo = cliente_por_telefone(telefone)
                 nome_cliente = cliente_completo.get("nome", "") if cliente_completo else ""
                 print(f"  [frete] endereco salvo -> enviando confirmacao + xlsx", flush=True)
-                await self.enviar_para_cliente(telefone,
-                    f"Obrigado, {nome_cliente}! Sua solicitacao de frete foi recebida com sucesso.\n"
-                    f"Em breve entraremos em contato com o orcamento.\n"
-                    f"Por favor, aguarde nosso retorno.")
                 self._salvar_solicitacao_frete(
                     telefone,
                     nome_cliente,
@@ -1210,6 +1408,10 @@ class WhatsAppBot:
                     cliente_info.get("estado", ""),
                     cliente_info.get("cep", ""),
                 )
+                await self.enviar_para_cliente(telefone,
+                    f"Obrigado, {nome_cliente}! Sua solicitacao de frete foi recebida com sucesso.\n"
+                    f"Estou consultando a transportadora, aguarde um momento...")
+                await self._solicitar_frete_fob(conv_id, telefone)
                 return
 
             # --- APRESENTACAO PROGRESSIVA DO MENU ---
@@ -1243,8 +1445,10 @@ class WhatsAppBot:
                     atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
                     return
-                if msg_texto.strip().isdigit():
-                    n = int(msg_texto.strip())
+                alpha = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}
+                opt = msg_texto.strip().lower()
+                if opt in alpha:
+                    n = alpha[opt]
                     if n in estado["apresentados"]:
                         self.apresentacao_submenu.pop(telefone, None)
                         self.processando.pop(telefone, None)
@@ -1253,7 +1457,7 @@ class WhatsAppBot:
                     else:
                         await self.enviar_para_cliente(telefone, f"Opção {n} ainda não foi apresentada. Aguarde...")
                         return
-                # nao-digit: cai na conversa livre (Gemini/fallback)
+                # nao-alpha: cai na conversa livre (Gemini/fallback)
 
             # --- SUBMENU: perguntar se deseja continuar ---
             if etapa == "submenu_continuar":
@@ -1265,13 +1469,13 @@ class WhatsAppBot:
                 if not ctx:
                     atualizar_etapa_conversa(conv_id, "menu_principal")
                     return
-                if opt in ("1", "sim"):
+                if opt in ("f", "1", "sim"):
                     produto = produto_por_id(ctx["produto_id"])
                     if produto:
                         self.processando.pop(telefone, None)
                         await self._iniciar_apresentacao_submenu(telefone, conv_id, produto)
                     return
-                if opt in ("2", "nao", "não", "voltar"):
+                if opt in ("g", "2", "nao", "não", "voltar"):
                     self.apresentacao_submenu.pop(telefone, None)
                     await self.enviar_para_cliente(telefone, "Voltando ao Menu Principal...", ctx.get("nome_sidebar", ""))
                     ok = await self._iniciar_apresentacao_menu(telefone, conv_id, ctx.get("nome_sidebar", ""))
@@ -1287,11 +1491,11 @@ class WhatsAppBot:
                 produto = produto_por_id(produto_id)
                 if produto:
                     opt = msg_texto.strip().lower()
-                    opt_map = {"1": "folder", "folder": "folder",
-                               "2": "valor", "valor": "valor", "preco": "valor", "preço": "valor",
-                               "3": "foto", "foto": "foto", "fotografia": "foto",
-                               "4": "video", "video": "video", "vídeo": "video",
-                               "5": "frete", "frete": "frete", "cotacao": "frete", "cotaçao": "frete"}
+                    opt_map = {"a": "folder", "1": "folder", "folder": "folder",
+                               "b": "valor", "2": "valor", "valor": "valor", "preco": "valor", "preço": "valor",
+                               "c": "foto", "3": "foto", "foto": "foto", "fotografia": "foto",
+                               "d": "video", "4": "video", "video": "video", "vídeo": "video",
+                               "e": "frete", "5": "frete", "frete": "frete", "cotacao": "frete", "cotaçao": "frete"}
                     acao = opt_map.get(opt)
 
                     if acao in ("folder", "valor", "foto", "video"):
@@ -1309,7 +1513,7 @@ class WhatsAppBot:
                         self.continuar_submenu[telefone] = {"conv_id": conv_id, "produto_id": produto_id, "nome_sidebar": nome_sidebar}
                         atualizar_etapa_conversa(conv_id, "submenu_continuar")
                         await self.enviar_para_cliente(telefone,
-                            "Deseja mais alguma opcao?\n[1] SIM - Continuar neste produto\n[2] NAO - Voltar ao Menu Principal",
+                            "Deseja mais alguma opção?\n[f] SIM - Continuar neste produto\n[g] NAO - Voltar ao Menu Principal",
                             nome_sidebar)
                         return
 

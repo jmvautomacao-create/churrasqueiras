@@ -29,7 +29,7 @@ def detalhar(produto_id: int) -> str:
     return (
         f"{p['nome']}\n\n"
         f"{p['descricao']}\n\n"
-        f"Preco: R$ {p['preco']:.2f}\n"
+        f"Preço: R$ {p['preco']:.2f}\n"
         f"Dimensoes: {p['medidas']}\n"
         f"Peso: {p['peso']}\n"
     )
@@ -45,28 +45,27 @@ def menu_interativo() -> str:
     for p in PRODUTOS:
         linhas.append(f"  [{p['id']}] {p['nome']}")
     linhas.append("")
-    linhas.append("Digite o numero do produto para ver as opcoes!")
+    linhas.append("Digite o número do produto para ver as opções!")
     return "\n".join(linhas)
 
 
 def submenu_produto(produto: dict) -> str:
     return (
-        f"Voce escolheu: {produto['nome']}\n"
-        f"{produto['descricao']}\n\n"
-        f"Escolha uma opcao:\n"
-        f"  [1] Folder - Ver folder do produto\n"
-        f"  [2] Valor - Consultar preco\n"
-        f"  [3] Foto - Enviar foto\n"
-        f"  [4] Video - Enviar video\n"
-        f"  [5] Frete - Solicitar cotacao de frete\n\n"
-        f"Digite o numero da opcao desejada."
+        f"Você escolheu: {produto['nome']}\n\n"
+        f"Escolha uma opção:\n"
+        f"  [a] Folder - Ver folder do produto\n"
+        f"  [b] Valor - Consultar preço\n"
+        f"  [c] Foto - Enviar foto\n"
+        f"  [d] Video - Enviar video\n"
+        f"  [e] Frete - Solicitar cotação de frete\n\n"
+        f"Digite a letra da opção desejada."
     )
 
 
 def valor_produto(produto: dict) -> str:
     return (
         f"{produto['nome']}\n"
-        f"Preco: R$ {produto['preco']:.2f}\n\n"
+        f"Preço: R$ {produto['preco']:.2f}\n\n"
         f"Dimensoes: {produto['medidas']}\n"
         f"Peso: {produto['peso']}"
     )

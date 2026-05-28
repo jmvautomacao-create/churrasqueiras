@@ -35,7 +35,7 @@ def gerar_folder(produto: dict):
     draw.text((40, y), produto["nome"], fill=COR_TITULO, font=font_titulo)
     y += 60
 
-    draw.text((40, y), f"Preco: R$ {produto['preco']:.2f}", fill=COR_PRECO, font=font_preco)
+    draw.text((40, y), f"Preço: R$ {produto['preco']:.2f}", fill=COR_PRECO, font=font_preco)
     y += 55
 
     draw.line([(40, y), (LARGURA - 40, y)], fill=(80, 80, 80), width=2)
