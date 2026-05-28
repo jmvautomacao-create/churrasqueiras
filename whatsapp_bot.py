@@ -1214,10 +1214,12 @@ class WhatsAppBot:
             transportadoras_reg[t["nome"]] = {
                 "telefone": t["numero"], "cot_id": cot_id,
                 "enviado_em": time.time(), "respondido": False,
+                "texto_antes": "",
             }
         transportadoras_reg["FOB"] = {
             "telefone": self.TRANSPORTADORA_FOB, "cot_id": criar_cotacao(conv_id, "FOB"),
             "enviado_em": time.time(), "respondido": False,
+            "texto_antes": "",
         }
         self.fretes_pendentes[request_id] = {
             "telefone": telefone,
@@ -1322,6 +1324,7 @@ class WhatsAppBot:
                 "FOB": {
                     "telefone": self.TRANSPORTADORA_FOB, "cot_id": cot_id,
                     "enviado_em": time.time(), "respondido": False,
+                    "texto_antes": "",
                 },
             },
             "status": "enviado",
@@ -1348,7 +1351,15 @@ class WhatsAppBot:
                 resp = await self._ler_msg_anterior_usuario()
                 if not resp:
                     continue
-                # Dedup para mesma resposta
+                # Primeira vez: salva texto_antes e aguarda NOVA mensagem
+                if not reg.get("texto_antes"):
+                    reg["texto_antes"] = resp
+                    print(f"  [frete] {trans_nome} #{req_id}: texto_antes salvo (msg atual), aguardando resposta nova", flush=True)
+                    continue
+                # Se o texto nao mudou, ainda sem resposta nova
+                if resp == reg["texto_antes"]:
+                    continue
+                # Dedup entre ciclos
                 dedup_key = f"{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
                     continue
