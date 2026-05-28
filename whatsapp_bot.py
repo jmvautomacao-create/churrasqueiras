@@ -1008,7 +1008,7 @@ class WhatsAppBot:
         data = datetime.now().strftime("%Y%m%d")
         return f"FRETE-{data}-{self.proximo_id_frete:03d}"
 
-    async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
+    async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str) -> str:
         nome = cliente_info.get("nome", "N/I")
         msg = (
             f"SOLICITAÇÃO #{request_id}\n"
@@ -1024,6 +1024,10 @@ class WhatsAppBot:
             f"Ex: R$ 150,00 - 5 dias úteis"
         )
         await self.enviar_texto(transportadora["numero"], msg)
+        header_name = await self.avaliar(
+            "() => { const h = document.querySelector('#main header [title]'); return h ? h.getAttribute('title') : ''; }"
+        )
+        return header_name
 
     async def _enviar_folder(self, conv_id: int, telefone: str, produto: dict):
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
@@ -1223,7 +1227,9 @@ class WhatsAppBot:
             f"Consultando fretes... (protocolo {request_id})")
         # Envia para transportadoras A/B via sidebar
         for t in TRANSPORTADORAS:
-            await self.solicitar_frete_transportadora(t, produto, ci, request_id)
+            nome_sidebar = await self.solicitar_frete_transportadora(t, produto, ci, request_id)
+            if nome_sidebar and request_id in self.fretes_pendentes:
+                self.fretes_pendentes[request_id]["transportadoras"][t["nome"]]["nome_sidebar"] = nome_sidebar
         # Envia para FOB via page.goto (pode nao estar na sidebar)
         await self._enviar_fob_msg(produto, ci, request_id)
 
@@ -1257,6 +1263,12 @@ class WhatsAppBot:
                 print(f"  -> FOB enviado #{request_id}", flush=True)
                 self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
                 self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+                # Record header name for later sidebar matching
+                header_name = await self.avaliar(
+                    "() => { const h = document.querySelector('#main header [title]'); return h ? h.getAttribute('title') : ''; }"
+                )
+                if header_name and request_id in self.fretes_pendentes:
+                    self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["nome_sidebar"] = header_name
             else:
                 print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
         except Exception as e:
@@ -1312,39 +1324,32 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        payload = {
-            "mapa": self.mapa_contatos,
-            "trans": list(self._telefones_transportadoras().values()),
-        }
+        # Build matchers: for each pending request, collect data to identify
+        # the transportadora chat in the sidebar
+        matchers = []
+        for req_id, req in list(self.fretes_pendentes.items()):
+            if req["status"] != "enviado":
+                continue
+            for trans_nome, reg in list(req["transportadoras"].items()):
+                if reg["respondido"]:
+                    continue
+                matchers.append({
+                    "req_id": req_id,
+                    "trans_nome": trans_nome,
+                    "telefone": reg["telefone"],
+                    "nome_sidebar": reg.get("nome_sidebar", ""),
+                })
+        if not matchers:
+            return
         raw = await self.avaliar(f"""
-            (payload) => {{
-                const mapa = payload.mapa;
-                const transPhones = payload.trans;
-                const transSet = new Set(transPhones);
+            (lista) => {{
                 const resultado = {{}};
                 const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
                 rows.forEach(row => {{
                     const titleEl = row.querySelector('[title]');
                     if (!titleEl) return;
                     const nome = titleEl.getAttribute('title') || '';
-                    let tel = nome.replace(/\\D/g, '');
-                    if (!tel || tel.length < 10) {{
-                        tel = mapa[nome] || '';
-                    }}
-                    // Fallback: match phone digits against transportadora numbers
-                    if (!tel || !transSet.has(tel)) {{
-                        const nomeDigits = nome.replace(/\\D/g, '');
-                        if (nomeDigits.length >= 4) {{
-                            tel = '';
-                            for (const t of transPhones) {{
-                                if (nomeDigits.endsWith(t) || t.endsWith(nomeDigits)) {{
-                                    tel = t;
-                                    break;
-                                }}
-                            }}
-                        }}
-                    }}
-                    if (!tel || !transSet.has(tel)) return;
+                    const nomeTel = nome.replace(/\\D/g, '');
                     const spans = row.querySelectorAll('span[dir]');
                     let texto = '';
                     for (const sp of spans) {{
@@ -1352,49 +1357,81 @@ class WhatsAppBot:
                             texto = sp.textContent.trim();
                         }}
                     }}
+                    if (!texto) return;
                     const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
                                  row.querySelector('[aria-label*="nao lida"]') ||
                                  row.querySelector('[aria-label*="unread"]');
-                    if (texto && badge) resultado[tel] = texto;
+                    if (!badge) return;
+                    // Try to match this row against any matcher
+                    for (const m of lista) {{
+                        if (resultado[m.req_id]) continue;
+                        // Strategy 1: saved sidebar name
+                        if (m.nome_sidebar && nome === m.nome_sidebar) {{
+                            resultado[m.req_id] = texto;
+                            break;
+                        }}
+                        // Strategy 2: phone digits in title
+                        if (nomeTel && (nomeTel.endsWith(m.telefone) || m.telefone.endsWith(nomeTel))) {{
+                            resultado[m.req_id] = texto;
+                            break;
+                        }}
+                        // Strategy 3: request ID in text preview
+                        if (texto.includes('#' + m.req_id)) {{
+                            resultado[m.req_id] = texto;
+                            break;
+                        }}
+                    }}
                 }});
                 return JSON.stringify(resultado);
             }}
-        """, payload)
+        """, matchers)
         try:
-            chats_transp = json.loads(raw)
+            chats_por_req = json.loads(raw)
         except json.JSONDecodeError:
             return
-        trans_telefones = self._telefones_transportadoras()
-        tel_para_nome = {v: k for k, v in trans_telefones.items()}
 
-        for req_id, req in list(self.fretes_pendentes.items()):
-            if req["status"] != "enviado":
+        for req_id, resp in chats_por_req.items():
+            req = self.fretes_pendentes.get(req_id)
+            if not req:
                 continue
+            # Find which transportadora matched (prefer by nome_sidebar, then telefone)
+            matched = None
             for trans_nome, reg in req["transportadoras"].items():
                 if reg["respondido"]:
                     continue
-                tel = reg["telefone"]
-                if tel not in chats_transp:
-                    continue
-                resp = chats_transp[tel]
-                if not resp:
-                    continue
-                dedup_key = f"{tel}|{resp}"
-                if dedup_key in self._respostas_frete_vistas:
-                    continue
-                self._respostas_frete_vistas.add(dedup_key)
-                valor = self.extrair_valor_frete(resp)
-                prazo = self.extrair_prazo(resp)
-                print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
-                reg["respondido"] = True
-                if reg.get("cot_id"):
-                    atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-                await self.enviar_para_cliente(req["telefone"],
-                    f"Frete {trans_nome} (protocolo {req_id}):\n"
-                    f"Valor: R$ {valor:.2f}\n"
-                    f"Prazo: {prazo or 'a confirmar'}\n"
-                    f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
-                    f"Deseja confirmar o pedido?")
+                reg_nome = reg.get("nome_sidebar", "")
+                if reg_nome and resp and reg_nome in resp:
+                    matched = trans_nome
+                    break
+                if resp and reg["telefone"] in resp:
+                    matched = trans_nome
+                    break
+            if not matched:
+                # Default to first unresponded
+                for trans_nome, reg in req["transportadoras"].items():
+                    if not reg["respondido"]:
+                        matched = trans_nome
+                        break
+            if not matched:
+                continue
+            reg = req["transportadoras"][matched]
+            dedup_key = f"{reg['telefone']}|{resp}"
+            if dedup_key in self._respostas_frete_vistas:
+                continue
+            self._respostas_frete_vistas.add(dedup_key)
+            valor = self.extrair_valor_frete(resp)
+            prazo = self.extrair_prazo(resp)
+            print(f"  [frete] Resposta {matched} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
+            reg["respondido"] = True
+            if reg.get("cot_id"):
+                atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+            await self.enviar_para_cliente(req["telefone"],
+                f"Frete {matched} (protocolo {req_id}):\n"
+                f"Valor: R$ {valor:.2f}\n"
+                f"Prazo: {prazo or 'a confirmar'}\n"
+                f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
+                f"Deseja confirmar o pedido?")
+            atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
             # Remove se todas responderam
             if all(t["respondido"] for t in req["transportadoras"].values()):
                 self.fretes_pendentes.pop(req_id, None)
@@ -1493,7 +1530,7 @@ class WhatsAppBot:
                     endereco = msg_anterior
                 cliente_info = self._parse_endereco(endereco)
                 atualizar_cliente(cliente_id, **{k: v for k, v in cliente_info.items() if v})
-                atualizar_etapa_conversa(conv_id, "menu_principal")
+                atualizar_etapa_conversa(conv_id, "frete_aguardando")
                 cliente_completo = cliente_por_telefone(telefone)
                 nome_cliente = cliente_completo.get("nome", "") if cliente_completo else ""
                 print(f"  [frete] endereco salvo -> enviando confirmacao + xlsx", flush=True)
@@ -1510,6 +1547,37 @@ class WhatsAppBot:
                     f"Obrigado, {nome_cliente}! Sua solicitacao de frete foi recebida com sucesso.\n"
                     f"Estou consultando a transportadora, aguarde um momento...")
                 await self._solicitar_frete_fob(conv_id, telefone)
+                return
+
+            # --- FRETE: aguardando resposta da transportadora ---
+            if etapa == "frete_aguardando":
+                await self.enviar_para_cliente(telefone,
+                    "Ainda estou aguardando a resposta da transportadora. Assim que receber, aviso voce!")
+                self.processando.pop(telefone, None)
+                return
+
+            # --- FRETE: aguardando confirmacao do cliente ---
+            if etapa == "frete_confirmar":
+                opt = self._n(msg_texto.strip().lower())
+                if opt in ("sim", "s", "1", "f"):
+                    cliente_dados = cliente_por_telefone(telefone)
+                    produto = produto_por_id(conversa.get("produto_interesse_id") or 0)
+                    if cliente_dados and produto:
+                        venda_id = criar_venda(conv_id, cliente_dados.get("id"), produto["id"], produto["preco"])
+                        atualizar_etapa_conversa(conv_id, "fechada")
+                        await self.enviar_para_cliente(telefone,
+                            f"Pedido confirmado!\nProduto: {produto['nome']}\n"
+                            f"Total: R$ {produto['preco']:.2f}\nObrigado pela compra!")
+                        await self.enviar_para_cliente(SEU_NUMERO,
+                            f"VENDA!\n{cliente_dados.get('nome','')} - Tel: {telefone}\n"
+                            f"{produto['nome']} - R$ {produto['preco']:.2f}\nID: {venda_id}")
+                        print(f"VENDA: {safe(cliente_dados.get('nome',''))} - {safe(produto['nome'])}")
+                    else:
+                        await self.enviar_para_cliente(telefone, "Erro ao processar confirmacao.")
+                else:
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                    await self.enviar_para_cliente(telefone, "Tudo bem! Se precisar de algo, estou aqui.")
+                self.processando.pop(telefone, None)
                 return
 
             # --- APRESENTACAO PROGRESSIVA DO MENU ---
