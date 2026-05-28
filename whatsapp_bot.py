@@ -1253,6 +1253,15 @@ class WhatsAppBot:
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA: ___________ dias uteis"
         )
+        # Tenta enviar via sidebar primeiro (sem page.goto)
+        ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
+        if ok:
+            print(f"  -> FOB enviado #{request_id}", flush=True)
+            self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
+            self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            return
+        # Fallback: page.goto (se FOB nao estiver na sidebar)
+        print(f"  [frete] FOB sidebar, tentando navegacao direta...", flush=True)
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
         try:
             await self.page.goto(url_fob, timeout=20000)
@@ -1265,7 +1274,7 @@ class WhatsAppBot:
                     await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
                     await self.page.keyboard.type(msg, delay=20)
                 await self._clicar_enviar(usar_enter=True)
-                print(f"  -> FOB enviado #{request_id}", flush=True)
+                print(f"  -> FOB enviado #{request_id} (goto)", flush=True)
                 self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
                 self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
             else:
@@ -1354,15 +1363,12 @@ class WhatsAppBot:
                     if (!m.body || typeof m.body !== 'string') continue;
                     const fromTel = (m.from || '').split('@')[0];
                     if (telSet.has(fromTel)) {{
-                        const t = m.t ? new Date(m.t * 1000) : new Date(0);
-                        if (!ultimas[fromTel] || t > ultimas[fromTel].ts) {{
-                            ultimas[fromTel] = {{ ts: t, body: m.body }};
-                        }}
+                        ultimas[fromTel] = m.body;
                     }}
                 }}
-                const out = {{}};
-                for (const [tel, info] of Object.entries(ultimas)) {{
-                    out[tel] = info.body;
+                let out = {{}};
+                for (const tel of Object.keys(ultimas)) {{
+                    out[tel] = ultimas[tel];
                 }}
                 return JSON.stringify(out);
             }}
