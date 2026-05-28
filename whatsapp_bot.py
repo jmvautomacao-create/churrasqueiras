@@ -1345,8 +1345,9 @@ class WhatsAppBot:
             return
         # Le via IndexedDB a ultima mensagem recebida de cada transportadora
         tels_json = json.dumps(list(tels_interesse))
+        self_num_json = json.dumps(SEU_NUMERO)
         raw = await self.avaliar(f"""
-            async (tels, selfNum) => {{
+            async () => {{
                 function extrairTel(remetente) {{
                     if (!remetente) return '';
                     if (typeof remetente === 'string') return remetente.split('@')[0] || '';
@@ -1363,10 +1364,13 @@ class WhatsAppBot:
                     const req = store.getAll();
                     req.onsuccess = () => r(req.result);
                 }});
-                const telSet = new Set(tels);
+                const telSet = new Set({tels_json});
+                const selfNum = {self_num_json};
                 const ultimas = {{}};
+                let totalMsgs = 0;
                 for (const m of all) {{
                     if (!m.body || typeof m.body !== 'string') continue;
+                    totalMsgs++;
                     const fromTel = extrairTel(m.from);
                     const toTel = extrairTel(m.to);
                     const tel = fromTel || toTel;
@@ -1374,15 +1378,14 @@ class WhatsAppBot:
                         ultimas[tel] = m.body;
                     }}
                 }}
-                let out = {{}};
-                for (const tel of Object.keys(ultimas)) {{
-                    out[tel] = ultimas[tel];
-                }}
+                let out = {{ encontr: Object.keys(ultimas).length, total: totalMsgs, msgs: ultimas }};
                 return JSON.stringify(out);
             }}
-        """, tels_json, SEU_NUMERO)
+        """)
         try:
-            tel_para_texto = json.loads(raw)
+            info = json.loads(raw)
+            tel_para_texto = info.get("msgs", {}) if isinstance(info, dict) else {}
+            print(f"  [frete] IndexedDB: {info.get('total',0)} msgs lidas, {info.get('encontr',0)} transportadoras encontradas", flush=True)
         except (json.JSONDecodeError, TypeError):
             return
         for req_id, req in list(self.fretes_pendentes.items()):
