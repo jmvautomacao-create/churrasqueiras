@@ -1016,6 +1016,8 @@ class WhatsAppBot:
             f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
+            f"CPF: {cliente_info.get('cpf', 'N/I')}\n"
+            f"{'='*30}\n"
             f"Produto: {produto['nome']}\n"
             f"Dimensoes: {produto['medidas']}  Peso: {produto['peso']}\n"
             f"Endereco: {cliente_info.get('endereco', 'N/I')} - "
@@ -1200,6 +1202,7 @@ class WhatsAppBot:
 
         ci = {
             "nome": cliente.get("nome", "N/I"),
+            "cpf": cliente.get("cpf", ""),
             "endereco": cliente.get("endereco", ""),
             "cidade": cliente.get("cidade", ""),
             "cep": cliente.get("cep", ""),
@@ -1239,6 +1242,7 @@ class WhatsAppBot:
             f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
+            f"CPF: {cliente_info.get('cpf', 'N/I')}\n"
             f"Produto: {produto['nome']}\n"
             f"NF: R$ {produto['preco']:.2f}\n"
             f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
@@ -1294,6 +1298,7 @@ class WhatsAppBot:
 
         ci = {
             "nome": cliente.get("nome", "N/I"),
+            "cpf": cliente.get("cpf", ""),
             "endereco": cliente.get("endereco", "N/I"),
             "cidade": cliente.get("cidade", "N/I"),
             "estado": cliente.get("estado", "N/I"),
