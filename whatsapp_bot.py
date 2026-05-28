@@ -1312,14 +1312,14 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        payload = json.dumps({
+        payload = {
             "mapa": self.mapa_contatos,
             "trans": list(self._telefones_transportadoras().values()),
-        })
+        }
         raw = await self.avaliar(f"""
             (payload) => {{
-                const mapa = JSON.parse(payload.mapa);
-                const transSet = new Set(JSON.parse(payload.trans));
+                const mapa = payload.mapa;
+                const transSet = new Set(payload.trans);
                 const resultado = {{}};
                 const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
                 rows.forEach(row => {{
