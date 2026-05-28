@@ -3,6 +3,7 @@ import json
 import time
 import re
 import unicodedata
+import httpx
 from pathlib import Path
 from datetime import datetime
 from playwright.async_api import async_playwright
@@ -58,6 +59,7 @@ class WhatsAppBot:
         self.fretes_pendentes: dict[str, dict] = {}
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
+        self._cache_cep: dict[str, dict] = {}
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -1007,6 +1009,19 @@ class WhatsAppBot:
         except Exception as e:
             print(f"[ERRO MIDIA] {safe(e)}")
 
+    async def _consultar_cep(self, cep: str) -> dict | None:
+        url = f"https://viacep.com.br/ws/{cep}/json/"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "erro" not in data:
+                        return data
+        except Exception:
+            pass
+        return None
+
     async def enviar_para_cliente(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
         return await self.enviar_texto(numero, texto, nome_sidebar)
 
@@ -1487,20 +1502,78 @@ class WhatsAppBot:
                     return
                 cpf_cnpj = digitos
                 atualizar_cliente(cliente_id, cpf_cnpj=cpf_cnpj)
-                atualizar_etapa_conversa(conv_id, "frete_endereco")
-                print(f"  [frete] cpf_cnpj salvo: {safe(cpf_cnpj)} -> etapa frete_endereco", flush=True)
-                await self.enviar_para_cliente(telefone, "Perfeito! Agora informe seu endereco completo com CEP (Rua, numero, bairro, cidade, estado, CEP):")
-                salvar_mensagem(conv_id, "agente", "Perfeito! Informe o endereco completo com CEP:")
+                atualizar_etapa_conversa(conv_id, "frete_cep")
+                print(f"  [frete] cpf_cnpj salvo: {safe(cpf_cnpj)} -> etapa frete_cep", flush=True)
+                await self.enviar_para_cliente(telefone, "Perfeito! Agora informe seu CEP:")
+                salvar_mensagem(conv_id, "agente", "Informe o CEP:")
                 return
 
-            if etapa.startswith("frete_endereco"):
-                endereco = msg_texto.strip()
+            if etapa == "frete_cep":
+                cep_raw = msg_texto.strip()
                 msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != endereco:
-                    print(f"  [frete] sidebar perdeu '{safe(endereco)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    endereco = msg_anterior
-                cliente_info = self._parse_endereco(endereco)
-                atualizar_cliente(cliente_id, **{k: v for k, v in cliente_info.items() if v})
+                if msg_anterior and msg_anterior != cep_raw:
+                    print(f"  [frete] sidebar perdeu '{safe(cep_raw)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    cep_raw = msg_anterior
+                digitos_cep = re.sub(r"\D", "", cep_raw)
+                if len(digitos_cep) != 8:
+                    await self.enviar_para_cliente(telefone,
+                        "CEP invalido. Digite 8 digitos:")
+                    return
+                dados = await self._consultar_cep(digitos_cep)
+                if not dados:
+                    await self.enviar_para_cliente(telefone,
+                        "CEP nao encontrado. Digite um CEP valido:")
+                    return
+                self._cache_cep[telefone] = dados
+                atualizar_etapa_conversa(conv_id, "frete_numero")
+                logr = dados.get("logradouro", "")
+                bairro = dados.get("bairro", "")
+                localidade = dados.get("localidade", "")
+                uf = dados.get("uf", "")
+                if logr:
+                    msg = f"{logr}"
+                    if bairro:
+                        msg += f", {bairro}"
+                    msg += f", {localidade}/{uf}\n\nQual o numero da casa?"
+                else:
+                    msg = f"{localidade}/{uf}"
+                    if bairro:
+                        msg = f"Bairro {bairro}, " + msg
+                    msg += "\n\nQual seu endereco completo (rua e numero)?"
+                await self.enviar_para_cliente(telefone, msg)
+                salvar_mensagem(conv_id, "agente", "Informe o numero:")
+                return
+
+            if etapa == "frete_numero":
+                dados_cep = self._cache_cep.pop(telefone, None)
+                if not dados_cep:
+                    atualizar_etapa_conversa(conv_id, "frete_cep")
+                    await self.enviar_para_cliente(telefone, "Erro. Informe seu CEP novamente:")
+                    return
+                numero_raw = msg_texto.strip()
+                msg_anterior = await self._ler_msg_anterior_usuario()
+                if msg_anterior and msg_anterior != numero_raw:
+                    print(f"  [frete] sidebar perdeu '{safe(numero_raw)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    numero_raw = msg_anterior
+                logradouro = dados_cep.get("logradouro", "")
+                if logradouro:
+                    # ViaCEP tem rua — pede so o numero
+                    if not numero_raw.isdigit():
+                        self._cache_cep[telefone] = dados_cep
+                        await self.enviar_para_cliente(telefone, "Digite apenas o numero da casa:")
+                        return
+                    numero = numero_raw
+                    bairro = dados_cep.get("bairro", "")
+                    endereco = f"{logradouro}, {numero}"
+                    if bairro:
+                        endereco += f" - {bairro}"
+                else:
+                    # Sem rua (CEP generico) — trata como endereco completo
+                    endereco = numero_raw
+                cidade = dados_cep.get("localidade", "")
+                estado = dados_cep.get("uf", "")
+                cep = dados_cep.get("cep", "").replace("-", "")
+                atualizar_cliente(cliente_id, endereco=endereco, cidade=cidade, estado=estado, cep=cep)
                 atualizar_etapa_conversa(conv_id, "frete_aguardando")
                 cliente_completo = cliente_por_telefone(telefone)
                 nome_cliente = cliente_completo.get("nome", "") if cliente_completo else ""
@@ -1510,9 +1583,9 @@ class WhatsAppBot:
                     nome_cliente,
                     cliente_completo.get("cpf_cnpj", "") if cliente_completo else "",
                     endereco,
-                    cliente_info.get("cidade", ""),
-                    cliente_info.get("estado", ""),
-                    cliente_info.get("cep", ""),
+                    cidade,
+                    estado,
+                    cep,
                 )
                 await self.enviar_para_cliente(telefone,
                     f"Obrigado, {nome_cliente}! Sua solicitacao de frete foi recebida com sucesso.\n"
