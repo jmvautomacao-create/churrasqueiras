@@ -1393,6 +1393,10 @@ class WhatsAppBot:
                 resp = tel_para_texto.get(tel)
                 if not resp:
                     continue
+                # Ignora se for nossa propria mensagem (sidebar mostra ultima msg, sem direcao)
+                sent = self.ultimo_envio_texto.get(tel, "")
+                if sent and (resp == sent or resp.startswith(sent[:60]) or sent.startswith(resp[:60])):
+                    continue
                 dedup_key = f"{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
                     continue
