@@ -1013,7 +1013,7 @@ class WhatsAppBot:
     async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
         msg = (
-            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE {request_id}\n"
+            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
             f"Produto: {produto['nome']}\n"
@@ -1024,6 +1024,7 @@ class WhatsAppBot:
             f"{'='*30}\n"
             f"Favor retornar as informacoes abaixo:\n\n"
             f"Protocolo de Solicitacao: {request_id}\n"
+            f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA: "
         )
@@ -1235,7 +1236,7 @@ class WhatsAppBot:
         nome = cliente_info.get("nome", "N/I")
         endereco = cliente_info.get("endereco", "N/I")
         msg = (
-            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE {request_id}\n"
+            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
             f"Produto: {produto['nome']}\n"
@@ -1245,6 +1246,7 @@ class WhatsAppBot:
             f"{'='*30}\n"
             f"Favor retornar as informacoes abaixo:\n\n"
             f"Protocolo de Solicitacao: {request_id}\n"
+            f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA: "
         )
@@ -1349,16 +1351,23 @@ class WhatsAppBot:
                     self._respostas_frete_vistas.add(dedup_key)
                     valor = self.extrair_valor_frete(resp)
                     prazo = self.extrair_prazo(resp)
+                    prot_transp = self.extrair_protocolo_transportadora(resp)
                     print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:60])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
                     reg["respondido"] = True
                     if reg.get("cot_id"):
                         atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-                    await self.enviar_para_cliente(req["telefone"],
+                    msg_cliente = (
                         f"Frete {trans_nome} (protocolo {req_id}):\n"
                         f"Valor: R$ {valor:.2f}\n"
                         f"Prazo: {prazo or 'a confirmar'}\n"
+                    )
+                    if prot_transp:
+                        msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
+                    msg_cliente += (
                         f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
-                        f"Deseja confirmar o pedido?")
+                        f"Deseja confirmar o pedido?"
+                    )
+                    await self.enviar_para_cliente(req["telefone"], msg_cliente)
                     atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
                 except Exception as e:
                     print(f"  [frete] Erro ao verificar {trans_nome}: {safe(str(e)[:80])}", flush=True)
@@ -1759,6 +1768,12 @@ class WhatsAppBot:
             m = re.search(p, texto, re.IGNORECASE)
             if m:
                 return m.group(0)
+        return None
+
+    def extrair_protocolo_transportadora(self, texto: str) -> str | None:
+        m = re.search(r"Protocolo\s+Transportadora:\s*(.+)", texto, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
         return None
 
     async def parar(self):
