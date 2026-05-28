@@ -1324,65 +1324,53 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        chats_raw = await self.avaliar("""
-            (mapaStr) => {
-                const mapa = JSON.parse(mapaStr);
-                const side = document.querySelector('#side') ||
-                             document.querySelector('[role="tabpanel"]');
-                if (!side) {
-                    const rows = document.querySelectorAll('[role="row"]');
-                    const resultado = [];
-                    for (let i = 0; i < rows.length && i < 30; i++) {
-                        const el = rows[i].querySelector('[title]');
-                        const nome = el ? el.getAttribute('title') : '';
-                        if (!nome || nome.length > 30 || nome === 'Filtrar conversas') continue;
-                        const spans = rows[i].querySelectorAll('span[dir]');
-                        let texto = '';
-                        const titulo = el.getAttribute('title') || '';
-                        for (const sp of spans) {
-                            if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {
-                                texto = sp.textContent.trim();
-                            }
-                        }
-                        if (!texto) continue;
-                        let telefone = nome.replace(/\\D/g, '');
-                        if (!telefone || telefone.length < 10) telefone = mapa[nome] || '';
-                        resultado.push({nome, texto, telefone});
-                    }
-                    return JSON.stringify(resultado);
-                }
-                const chats = side.querySelectorAll(':scope [role="row"]');
-                const resultado = [];
-                chats.forEach(chat => {
-                    const el = chat.querySelector('[title]');
-                    const nome = el ? el.getAttribute('title') : '';
-                    if (!nome || nome.length > 30 || nome === 'Filtrar conversas' || nome.startsWith('Filt')) return;
-                    const spans = chat.querySelectorAll('span[dir]');
-                    let texto = '';
-                    const titulo = el ? el.getAttribute('title') : '';
-                    for (const sp of spans) {
-                        if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {
-                            texto = sp.textContent.trim();
-                        }
-                    }
-                    if (!texto) return;
-                    let telefone = nome.replace(/\\D/g, '');
-                    if (!telefone || telefone.length < 10) telefone = mapa[nome] || '';
-                    resultado.push({nome, texto, telefone});
-                });
-                return JSON.stringify(resultado);
-            }
-        """, json.dumps(self.mapa_contatos))
+        # Coleta todos os telefones de transportadoras pendentes
+        tels_interesse = set()
+        for req in self.fretes_pendentes.values():
+            if req["status"] != "enviado":
+                continue
+            for reg in req["transportadoras"].values():
+                if not reg["respondido"]:
+                    tels_interesse.add(reg["telefone"])
+        if not tels_interesse:
+            return
+        # Le via IndexedDB a ultima mensagem recebida de cada transportadora
+        tels_json = json.dumps(list(tels_interesse))
+        raw = await self.avaliar(f"""
+            async (tels) => {{
+                const db = await new Promise(r => {{
+                    const req = indexedDB.open('model-storage');
+                    req.onsuccess = () => r(req.result);
+                }});
+                const tx = db.transaction('message', 'readonly');
+                const store = tx.objectStore('message');
+                const all = await new Promise(r => {{
+                    const req = store.getAll();
+                    req.onsuccess = () => r(req.result);
+                }});
+                const telSet = new Set(tels);
+                const ultimas = {{}};
+                for (const m of all) {{
+                    if (!m.body || typeof m.body !== 'string') continue;
+                    const fromTel = (m.from || '').split('@')[0];
+                    if (telSet.has(fromTel)) {{
+                        const t = m.t ? new Date(m.t * 1000) : new Date(0);
+                        if (!ultimas[fromTel] || t > ultimas[fromTel].ts) {{
+                            ultimas[fromTel] = {{ ts: t, body: m.body }};
+                        }}
+                    }}
+                }}
+                const out = {{}};
+                for (const [tel, info] of Object.entries(ultimas)) {{
+                    out[tel] = info.body;
+                }}
+                return JSON.stringify(out);
+            }}
+        """, tels_json)
         try:
-            chats = json.loads(chats_raw)
+            tel_para_texto = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return
-        tel_para_texto = {}
-        for c in chats:
-            tel = c.get("telefone", "")
-            txt = c.get("texto", "")
-            if tel and len(tel) >= 12 and txt:
-                tel_para_texto[tel] = txt
         for req_id, req in list(self.fretes_pendentes.items()):
             if req["status"] != "enviado":
                 continue
@@ -1392,10 +1380,6 @@ class WhatsAppBot:
                 tel = reg["telefone"]
                 resp = tel_para_texto.get(tel)
                 if not resp:
-                    continue
-                # Ignora se for nossa propria mensagem (sidebar mostra ultima msg, sem direcao)
-                sent = self.ultimo_envio_texto.get(tel, "")
-                if sent and (resp == sent or resp.startswith(sent[:60]) or sent.startswith(resp[:60])):
                     continue
                 dedup_key = f"{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
