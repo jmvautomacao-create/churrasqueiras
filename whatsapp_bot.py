@@ -489,9 +489,11 @@ class WhatsAppBot:
 
                     # Dedup: mesma mensagem do usuario ja processada com sucesso
                     if texto:
+                        # Para mensagens numericas (selecao de produto), dedup mais curto (30s)
+                        dedup_window = 30 if texto.strip().isdigit() else 600
                         chave = f"{telefone}|{self._n(texto)}"
                         ult_visto = self.ultimo_visto_texto.get(chave, 0)
-                        if agora - ult_visto < 600:
+                        if agora - ult_visto < dedup_window:
                             if c % 30 == 0:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto ja processado ({agora-ult_visto:.0f}s atras)")
                             continue
