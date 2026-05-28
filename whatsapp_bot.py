@@ -1020,8 +1020,10 @@ class WhatsAppBot:
             f"{cliente_info.get('cidade', 'N/I')}/{cliente_info.get('estado', 'N/I')} "
             f"CEP: {cliente_info.get('cep', 'N/I')}\n"
             f"{'='*30}\n"
-            f"Favor informar VALOR DO FRETE + PRAZO DE ENTREGA.\n"
-            f"Ex: R$ 150,00 - 5 dias úteis"
+            f"Favor retornar as informacoes abaixo:\n\n"
+            f"Protocolo de Solicitacao: {request_id}\n"
+            f"VALOR DO FRETE: R$ \n"
+            f"PRAZO DE ENTREGA: "
         )
         await self.enviar_texto(transportadora["numero"], msg)
         header_name = await self.avaliar(
@@ -1245,8 +1247,10 @@ class WhatsAppBot:
             f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
             f"Endereco: {endereco}\n"
             f"{'='*30}\n"
-            f"Favor informar VALOR DO FRETE + PRAZO DE ENTREGA.\n"
-            f"Ex: R$ 150,00 - 5 dias úteis"
+            f"Favor retornar as informacoes abaixo:\n\n"
+            f"Protocolo de Solicitacao: {request_id}\n"
+            f"VALOR DO FRETE: R$ \n"
+            f"PRAZO DE ENTREGA: "
         )
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
         try:
@@ -1375,8 +1379,8 @@ class WhatsAppBot:
                             resultado[m.req_id] = texto;
                             break;
                         }}
-                        // Strategy 3: request ID in text preview
-                        if (texto.includes('#' + m.req_id)) {{
+                        // Strategy 3: request ID in text preview (with or without #)
+                        if (texto.includes('#' + m.req_id) || texto.includes(m.req_id)) {{
                             resultado[m.req_id] = texto;
                             break;
                         }}
