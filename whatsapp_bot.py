@@ -1016,7 +1016,7 @@ class WhatsAppBot:
             f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
-            f"CPF: {cliente_info.get('cpf', 'N/I')}\n"
+            f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
             f"{'='*30}\n"
             f"Produto: {produto['nome']}\n"
             f"Dimensoes: {produto['medidas']}  Peso: {produto['peso']}\n"
@@ -1119,7 +1119,7 @@ class WhatsAppBot:
         clean = re.sub(r",+", ",", clean)
         return clean.strip().strip(",").strip()
 
-    def _salvar_solicitacao_frete(self, telefone, nome, cpf, endereco, cidade, estado, cep):
+    def _salvar_solicitacao_frete(self, telefone, nome, cpf_cnpj, endereco, cidade, estado, cep):
         from openpyxl import Workbook
         pasta = PASTA_SOLICITACOES
         pasta.mkdir(exist_ok=True)
@@ -1136,7 +1136,7 @@ class WhatsAppBot:
             ("DATA/HORA", agora.strftime("%d/%m/%Y %H:%M")),
             ("NOME", nome),
             ("WHATSAPP", telefone),
-            ("CPF/CNPJ", cpf),
+            ("CPF/CNPJ", cpf_cnpj),
             ("ENDERECO", endereco_limpo),
             ("CIDADE", cidade),
             ("ESTADO", estado),
@@ -1202,7 +1202,7 @@ class WhatsAppBot:
 
         ci = {
             "nome": cliente.get("nome", "N/I"),
-            "cpf": cliente.get("cpf", ""),
+            "cpf_cnpj": cliente.get("cpf_cnpj", ""),
             "endereco": cliente.get("endereco", ""),
             "cidade": cliente.get("cidade", ""),
             "cep": cliente.get("cep", ""),
@@ -1242,7 +1242,7 @@ class WhatsAppBot:
             f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
             f"{'='*30}\n"
             f"Cliente: {nome}\n"
-            f"CPF: {cliente_info.get('cpf', 'N/I')}\n"
+            f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
             f"Produto: {produto['nome']}\n"
             f"NF: R$ {produto['preco']:.2f}\n"
             f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
@@ -1298,7 +1298,7 @@ class WhatsAppBot:
 
         ci = {
             "nome": cliente.get("nome", "N/I"),
-            "cpf": cliente.get("cpf", ""),
+            "cpf_cnpj": cliente.get("cpf_cnpj", ""),
             "endereco": cliente.get("endereco", "N/I"),
             "cidade": cliente.get("cidade", "N/I"),
             "estado": cliente.get("estado", "N/I"),
@@ -1459,14 +1459,14 @@ class WhatsAppBot:
                 return
 
             if etapa == "frete_cpf":
-                cpf = msg_texto.strip()
+                cpf_cnpj = msg_texto.strip()
                 msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != cpf:
-                    print(f"  [frete] sidebar perdeu '{safe(cpf)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    cpf = msg_anterior
-                atualizar_cliente(cliente_id, cpf=cpf)
+                if msg_anterior and msg_anterior != cpf_cnpj:
+                    print(f"  [frete] sidebar perdeu '{safe(cpf_cnpj)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
+                    cpf_cnpj = msg_anterior
+                atualizar_cliente(cliente_id, cpf_cnpj=cpf_cnpj)
                 atualizar_etapa_conversa(conv_id, "frete_endereco")
-                print(f"  [frete] cpf salvo: {safe(cpf)} -> etapa frete_endereco", flush=True)
+                print(f"  [frete] cpf_cnpj salvo: {safe(cpf_cnpj)} -> etapa frete_endereco", flush=True)
                 await self.enviar_para_cliente(telefone, "Perfeito! Agora informe seu endereco completo com CEP (Rua, numero, bairro, cidade, estado, CEP):")
                 salvar_mensagem(conv_id, "agente", "Perfeito! Informe o endereco completo com CEP:")
                 return
@@ -1486,7 +1486,7 @@ class WhatsAppBot:
                 self._salvar_solicitacao_frete(
                     telefone,
                     nome_cliente,
-                    cliente_completo.get("cpf", "") if cliente_completo else "",
+                    cliente_completo.get("cpf_cnpj", "") if cliente_completo else "",
                     endereco,
                     cliente_info.get("cidade", ""),
                     cliente_info.get("estado", ""),

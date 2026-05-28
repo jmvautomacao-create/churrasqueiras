@@ -21,7 +21,7 @@ def init_db():
             nome TEXT NOT NULL,
             telefone TEXT NOT NULL UNIQUE,
             endereco TEXT,
-            cpf TEXT,
+            cpf_cnpj TEXT,
             cidade TEXT,
             estado TEXT,
             cep TEXT,
@@ -244,7 +244,7 @@ def get_conversa_ativa(telefone):
     conn = get_connection()
     row = conn.execute(
         """SELECT c.id as conversa_id, cl.id as cliente_id, cl.nome, cl.telefone,
-                  cl.endereco, cl.cpf, c.etapa, c.produto_interesse_id
+                  cl.endereco, cl.cpf_cnpj, c.etapa, c.produto_interesse_id
            FROM conversas c
            JOIN clientes cl ON cl.id = c.cliente_id
            WHERE cl.telefone = ? AND c.status = 'ativo'
