@@ -718,7 +718,7 @@ class WhatsAppBot:
                                 const titleEl = row.querySelector('[title]');
                                 if (!titleEl) continue;
                                 const titleTel = (titleEl.getAttribute('title') || '').replace(/\\D/g, '');
-                                if (titleTel.endsWith(tel) || tel.endsWith(titleTel)) {{
+                                if (titleTel && (titleTel.endsWith(tel) || tel.endsWith(titleTel))) {{
                                     row.click();
                                     return true;
                                 }}
