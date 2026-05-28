@@ -1770,7 +1770,12 @@ class WhatsAppBot:
             print(f"VENDA REGISTRADA: {safe(comando['cliente_nome'])} - {safe(produto['nome'])}")
 
     def extrair_valor_frete(self, texto: str) -> float:
-        for p in [r"(?:R\$)?\s*(\d+[.,]\d{2,})", r"(?:valor|frete)\s*:?\s*(?:R\$)?\s*(\d+[.,]\d+)"]:
+        padroes = [
+            r"(?:VALOR DO FRETE|FRETE)\s*:?\s*(?:R\$)?\s*(\d+[.,]\d{2,})",
+            r"(?:R\$)?\s*(\d+[.,]\d{2,})",
+            r"(?:valor|frete)\s*:?\s*(?:R\$)?\s*(\d+[.,]\d+)",
+        ]
+        for p in padroes:
             m = re.search(p, texto, re.IGNORECASE)
             if m:
                 val = m.group(1)
@@ -1781,11 +1786,9 @@ class WhatsAppBot:
 
     def extrair_prazo(self, texto: str) -> str | None:
         padroes = [
-            r"(\d+\s*dias?\s*úteis?)",
-            r"(\d+\s*dias?\s*corridos?)",
-            r"(\d+\s*dias?)",
-            r"(1\s*semana)",
-            r"(2\s*semanas?)",
+            r"(\d+[_\s-]*dias?\s*úteis?)",
+            r"(\d+[_\s-]*dias?\s*corridos?)",
+            r"(\d+[_\s-]*dias?)",
         ]
         for p in padroes:
             m = re.search(p, texto, re.IGNORECASE)
