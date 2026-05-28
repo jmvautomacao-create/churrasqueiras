@@ -1760,7 +1760,10 @@ class WhatsAppBot:
         for p in [r"(?:R\$)?\s*(\d+[.,]\d{2,})", r"(?:valor|frete)\s*:?\s*(?:R\$)?\s*(\d+[.,]\d+)"]:
             m = re.search(p, texto, re.IGNORECASE)
             if m:
-                return float(m.group(1).replace(".", "").replace(",", "."))
+                val = m.group(1)
+                if "," in val:
+                    val = val.replace(".", "").replace(",", ".")
+                return float(val)
         return 0.0
 
     def extrair_prazo(self, texto: str) -> str | None:
@@ -1780,7 +1783,10 @@ class WhatsAppBot:
     def extrair_protocolo_transportadora(self, texto: str) -> str | None:
         m = re.search(r"Protocolo\s+Transportadora:\s*(.+)", texto, re.IGNORECASE)
         if m:
-            return m.group(1).strip()
+            val = m.group(1).strip()
+            if not val or val.startswith(("VALOR", "PRAZO", "Protocolo")):
+                return None
+            return val
         return None
 
     async def parar(self):
