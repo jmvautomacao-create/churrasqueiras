@@ -1028,7 +1028,7 @@ class WhatsAppBot:
             f"Protocolo de Solicitacao: {request_id}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
-            f"PRAZO DE ENTREGA: "
+            f"PRAZO DE ENTREGA: ___________ dias uteis"
         )
         await self.enviar_texto(transportadora["numero"], msg)
 
@@ -1252,7 +1252,7 @@ class WhatsAppBot:
             f"Protocolo de Solicitacao: {request_id}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
-            f"PRAZO DE ENTREGA: "
+            f"PRAZO DE ENTREGA: ___________ dias uteis"
         )
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
         try:
