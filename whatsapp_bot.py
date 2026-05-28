@@ -1391,26 +1391,37 @@ class WhatsAppBot:
                 if dedup_key in self._respostas_frete_vistas:
                     continue
                 self._respostas_frete_vistas.add(dedup_key)
-                valor = self.extrair_valor_frete(resp)
-                prazo = self.extrair_prazo(resp)
-                prot_transp = self.extrair_protocolo_transportadora(resp)
-                print(f"  [frete] Resposta {trans_nome} #{req_id}: '{safe(resp[:80])}' -> R$ {valor:.2f} ({prazo or 'sem prazo'})", flush=True)
-                reg["respondido"] = True
-                if reg.get("cot_id"):
-                    atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-                msg_cliente = (
-                    f"Frete {trans_nome} (protocolo {req_id}):\n"
-                    f"Valor: R$ {valor:.2f}\n"
-                    f"Prazo: {prazo or 'a confirmar'}\n"
-                )
-                if prot_transp:
-                    msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
-                msg_cliente += (
-                    f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n\n"
-                    f"Deseja confirmar o pedido?"
-                )
-                await self.enviar_para_cliente(req["telefone"], msg_cliente)
-                atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+                print(f"  [frete] Resposta CRUDA {trans_nome} #{req_id}: '{safe(resp)}'", flush=True)
+                try:
+                    valor = self.extrair_valor_frete(resp)
+                    prazo = self.extrair_prazo(resp)
+                    prot_transp = self.extrair_protocolo_transportadora(resp)
+                    print(f"  [frete] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
+                    reg["respondido"] = True
+                    if reg.get("cot_id"):
+                        atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+                    msg_cliente = (
+                        f"Frete {trans_nome} (protocolo {req_id}):\n"
+                    )
+                    if valor > 0:
+                        msg_cliente += f"Valor: R$ {valor:.2f}\n"
+                    else:
+                        msg_cliente += f"Valor: {resp}\n"
+                    msg_cliente += f"Prazo: {prazo or 'a confirmar'}\n"
+                    if prot_transp:
+                        msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
+                    if valor > 0:
+                        msg_cliente += f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n"
+                    msg_cliente += f"\nDeseja confirmar o pedido?"
+                    ok = await self.enviar_para_cliente(req["telefone"], msg_cliente)
+                    if not ok:
+                        print(f"  [frete] Falha ao enviar resposta ao cliente {req['telefone']}", flush=True)
+                    atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+                    print(f"  [frete] Resposta {trans_nome} encaminhada ao cliente", flush=True)
+                except Exception as e:
+                    print(f"  [frete] Erro ao processar resposta {trans_nome}: {safe(str(e)[:100])}", flush=True)
+                    import traceback
+                    traceback.print_exc()
             if all(t["respondido"] for t in req["transportadoras"].values()):
                 self.fretes_pendentes.pop(req_id, None)
 
@@ -1788,7 +1799,7 @@ class WhatsAppBot:
             m = re.search(p, texto, re.IGNORECASE)
             if m:
                 return float(m.group(1).replace(".", "").replace(",", "."))
-        return 50.0
+        return 0.0
 
     def extrair_prazo(self, texto: str) -> str | None:
         padroes = [
