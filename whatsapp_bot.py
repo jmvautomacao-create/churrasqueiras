@@ -1335,14 +1335,23 @@ class WhatsAppBot:
                 tel = reg["telefone"]
                 try:
                     await self.page.goto(f"https://web.whatsapp.com/send/?phone={tel}", timeout=15000)
-                    await asyncio.sleep(1.5)
+                    try:
+                        await self.page.wait_for_selector('#main', timeout=12000)
+                    except:
+                        pass
+                    await asyncio.sleep(2)
                     resp = await self.avaliar("""
                         () => {
-                            const msgs = document.querySelectorAll('#main .message-in .copyable-text');
-                            if (!msgs.length) return '';
-                            const last = msgs[msgs.length - 1];
-                            const text = last.textContent.trim();
-                            return text || '';
+                            const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
+                            if (!painel) return '';
+                            const msgs = painel.querySelectorAll(':scope .message-in');
+                            const usuarios = [];
+                            for (const el of msgs) {
+                                const textEl = el.querySelector('span[dir="ltr"], span[dir="auto"]');
+                                if (textEl && textEl.textContent.trim()) usuarios.push(textEl.textContent.trim());
+                            }
+                            if (usuarios.length === 0) return '';
+                            return usuarios[usuarios.length - 1];
                         }
                     """)
                     await self.page.goto(goto_base, timeout=15000)

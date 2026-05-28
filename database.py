@@ -75,6 +75,11 @@ def init_db():
         );
     """)
 
+    try:
+        conn.execute("ALTER TABLE clientes RENAME COLUMN cpf TO cpf_cnpj")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
