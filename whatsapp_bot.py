@@ -1333,61 +1333,6 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        # Coleta todos os telefones de transportadoras pendentes
-        tels_interesse = set()
-        for req in self.fretes_pendentes.values():
-            if req["status"] != "enviado":
-                continue
-            for reg in req["transportadoras"].values():
-                if not reg["respondido"]:
-                    tels_interesse.add(reg["telefone"])
-        if not tels_interesse:
-            return
-        # Le via IndexedDB a ultima mensagem recebida de cada transportadora
-        tels_json = json.dumps(list(tels_interesse))
-        self_num_json = json.dumps(SEU_NUMERO)
-        raw = await self.avaliar(f"""
-            async () => {{
-                function extrairTel(remetente) {{
-                    if (!remetente) return '';
-                    if (typeof remetente === 'string') return remetente.split('@')[0] || '';
-                    if (typeof remetente === 'object' && remetente.user) return remetente.user;
-                    return '';
-                }}
-                const db = await new Promise(r => {{
-                    const req = indexedDB.open('model-storage');
-                    req.onsuccess = () => r(req.result);
-                }});
-                const tx = db.transaction('message', 'readonly');
-                const store = tx.objectStore('message');
-                const all = await new Promise(r => {{
-                    const req = store.getAll();
-                    req.onsuccess = () => r(req.result);
-                }});
-                const telSet = new Set({tels_json});
-                const selfNum = {self_num_json};
-                const ultimas = {{}};
-                let totalMsgs = 0;
-                for (const m of all) {{
-                    if (!m.body || typeof m.body !== 'string') continue;
-                    totalMsgs++;
-                    const fromTel = extrairTel(m.from);
-                    const toTel = extrairTel(m.to);
-                    const tel = fromTel || toTel;
-                    if (tel && tel !== selfNum && telSet.has(tel)) {{
-                        ultimas[tel] = m.body;
-                    }}
-                }}
-                let out = {{ encontr: Object.keys(ultimas).length, total: totalMsgs, msgs: ultimas }};
-                return JSON.stringify(out);
-            }}
-        """)
-        try:
-            info = json.loads(raw)
-            tel_para_texto = info.get("msgs", {}) if isinstance(info, dict) else {}
-            print(f"  [frete] IndexedDB: {info.get('total',0)} msgs lidas, {info.get('encontr',0)} transportadoras encontradas", flush=True)
-        except (json.JSONDecodeError, TypeError):
-            return
         for req_id, req in list(self.fretes_pendentes.items()):
             if req["status"] != "enviado":
                 continue
@@ -1395,9 +1340,15 @@ class WhatsAppBot:
                 if reg["respondido"]:
                     continue
                 tel = reg["telefone"]
-                resp = tel_para_texto.get(tel)
+                # Abre o chat da transportadora via sidebar (sem navegacao)
+                ok = await self._abrir_chat_sidebar(telefone=tel)
+                if not ok:
+                    continue
+                await asyncio.sleep(0.5)
+                resp = await self._ler_msg_anterior_usuario()
                 if not resp:
                     continue
+                # Dedup para mesma resposta
                 dedup_key = f"{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
                     continue
