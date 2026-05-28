@@ -1312,37 +1312,43 @@ class WhatsAppBot:
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
             return
-        raw = await self.avaliar("""
-            () => {
-                const mapa = {};
+        mapa_json = json.dumps(self.mapa_contatos)
+        trans_set_json = json.dumps(list(self._telefones_transportadoras().values()))
+        raw = await self.avaliar(f"""
+            (mapaJson, transTels) => {{
+                const mapa = JSON.parse(mapaJson);
+                const transSet = new Set(JSON.parse(transTels));
+                const resultado = {{}};
                 const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
-                rows.forEach(row => {
+                rows.forEach(row => {{
                     const titleEl = row.querySelector('[title]');
                     if (!titleEl) return;
                     const nome = titleEl.getAttribute('title') || '';
-                    const tel = nome.replace(/\\D/g, '');
-                    if (!tel || tel.length < 10) return;
+                    let tel = nome.replace(/\\D/g, '');
+                    if (!tel || tel.length < 10) {{
+                        tel = mapa[nome] || '';
+                    }}
+                    if (!tel || !transSet.has(tel)) return;
                     const spans = row.querySelectorAll('span[dir]');
                     let texto = '';
-                    for (const sp of spans) {
-                        if (sp.getAttribute('title') !== nome && sp.textContent.trim()) {
+                    for (const sp of spans) {{
+                        if (sp.getAttribute('title') !== nome && sp.textContent.trim()) {{
                             texto = sp.textContent.trim();
-                        }
-                    }
+                        }}
+                    }}
                     const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
                                  row.querySelector('[aria-label*="nao lida"]') ||
                                  row.querySelector('[aria-label*="unread"]');
-                    if (texto && badge) mapa[tel] = texto;
-                });
-                return JSON.stringify(mapa);
-            }
-        """)
+                    if (texto && badge) resultado[tel] = texto;
+                }});
+                return JSON.stringify(resultado);
+            }}
+        """, mapa_json, trans_set_json)
         try:
             chats_transp = json.loads(raw)
         except json.JSONDecodeError:
             return
         trans_telefones = self._telefones_transportadoras()
-        # Inverte: telefone -> nome_transportadora
         tel_para_nome = {v: k for k, v in trans_telefones.items()}
 
         for req_id, req in list(self.fretes_pendentes.items()):
