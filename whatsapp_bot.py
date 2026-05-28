@@ -1345,9 +1345,13 @@ class WhatsAppBot:
                 })
         if not matchers:
             return
+        print(f"  [frete] _processar_fretes_pendentes: {len(matchers)} matchers", flush=True)
+        for m in matchers:
+            print(f"    -> req={m['req_id']} trans={m['trans_nome']} nome_sidebar='{safe(m['nome_sidebar'][:30])}' tel={m['telefone']}", flush=True)
         raw = await self.avaliar(f"""
             (lista) => {{
                 const resultado = {{}};
+                const debug = [];
                 const rows = (document.querySelector('#side') || document).querySelectorAll('[role="row"]');
                 rows.forEach(row => {{
                     const titleEl = row.querySelector('[title]');
@@ -1365,6 +1369,7 @@ class WhatsAppBot:
                     const badge = row.querySelector('[data-testid="icon-unread-count"]') ||
                                  row.querySelector('[aria-label*="nao lida"]') ||
                                  row.querySelector('[aria-label*="unread"]');
+                    debug.push({{nome, texto: texto.slice(0,80), badge: !!badge}});
                     if (!badge) return;
                     // Try to match this row against any matcher
                     for (const m of lista) {{
@@ -1386,13 +1391,18 @@ class WhatsAppBot:
                         }}
                     }}
                 }});
-                return JSON.stringify(resultado);
+                return JSON.stringify({{resultado, debug}});
             }}
         """, matchers)
         try:
-            chats_por_req = json.loads(raw)
+            parsed = json.loads(raw)
+            chats_por_req = parsed.get("resultado", {})
+            debug_rows = parsed.get("debug", [])
         except json.JSONDecodeError:
             return
+        if debug_rows:
+            for d in debug_rows:
+                print(f"    [frete debug] nome='{safe(d['nome'][:25])}' badge={d['badge']} texto='{safe(d['texto'][:60])}'", flush=True)
 
         for req_id, resp in chats_por_req.items():
             req = self.fretes_pendentes.get(req_id)
