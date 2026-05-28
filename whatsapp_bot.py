@@ -459,6 +459,13 @@ class WhatsAppBot:
                     if not nome_raw or nome_raw == "DEBUG" or nome_raw.startswith("Filt"):
                         continue
 
+                    # Transportadoras: ignorar no loop principal (processadas em _processar_fretes_pendentes)
+                    transportadoras_tels = set(t["numero"] for t in TRANSPORTADORAS) | {self.TRANSPORTADORA_FOB}
+                    if telefone in transportadoras_tels:
+                        if c % 30 == 0:
+                            print(f"  [{c} SKIP] {safe(nome_raw)}: transportadora ignorada no loop principal")
+                        continue
+
                     # Dedup intra-ciclo: chats duplicados (ex: role="row" aninhado)
                     if nome_key in vistos_ciclo:
                         continue
