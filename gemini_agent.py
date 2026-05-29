@@ -1,12 +1,13 @@
 import json
 import time
-from google import genai
-from google.genai import types
-from config import GEMINI_API_KEY, PRODUTOS
+from openai import OpenAI
+from config import GROQ_API_KEY, PRODUTOS
 
-cliente = genai.Client(api_key=GEMINI_API_KEY)
+cliente = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=GROQ_API_KEY,
+)
 
-# Catalogo compacto em texto puro (~80% menos tokens que JSON indentado)
 _catalogo = "\n".join(
     f"{p['id']}. {p['nome']} - R$ {p['preco']:,.2f}\n"
     f"   Descrição: {p['descricao']}\n"
@@ -38,9 +39,8 @@ Você atua quando o cliente faz perguntas abertas (ex: "qual a diferença?", "é
 - Quando a venda for confirmada, responda com: [VENDA_CONFIRMADA:<cliente_nome>:<telefone>:<produto_id>:<valor_total>]
 - Responda sempre em português brasileiro"""
 
-# Throttle global
 _ultima_chamada: float = 0
-_INTERVALO_MINIMO = 2.0  # segundos entre chamadas
+_INTERVALO_MINIMO = 2.0
 
 
 def _throttle():
@@ -53,21 +53,18 @@ def _throttle():
 
 
 def gerar_resposta(historico: list[dict]) -> str:
-    from google.genai import types
-
     _throttle()
 
-    contents = [types.Content(role="user", parts=[types.Part(text=SISTEMA)])]
-    # Envia apenas as últimas 10 mensagens (vs 30 antes)
+    messages = [{"role": "system", "content": SISTEMA}]
     for m in historico[-10:]:
-        role = "user" if m["origem"] == "cliente" else "model"
-        contents.append(types.Content(role=role, parts=[types.Part(text=m["conteudo"])]))
+        role = "user" if m["origem"] == "cliente" else "assistant"
+        messages.append({"role": role, "content": m["conteudo"]})
 
-    response = cliente.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=contents,
+    response = cliente.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
     )
-    return response.text.strip()
+    return response.choices[0].message.content.strip()
 
 
 def resposta_fallback(historico: list[dict]) -> str:

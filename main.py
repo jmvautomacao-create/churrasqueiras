@@ -11,7 +11,7 @@ from whatsapp_bot import WhatsAppBot
 async def main():
     print("=" * 50)
     print("   AGENTE DE VENDAS - CHURRASQUEIRAS")
-    print("   WhatsApp Web + Google Gemini")
+    print("   WhatsApp Web + Groq (LLaMA 3.3)")
     print("=" * 50)
 
     init_db()

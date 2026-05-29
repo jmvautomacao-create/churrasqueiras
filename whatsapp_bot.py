@@ -54,9 +54,6 @@ class WhatsAppBot:
         self.ultima_limpeza = 0.0
         self.chats_com_resposta: set[str] = set()
         self.ultimo_gemini: dict[str, float] = {}
-        self.gemini_diario = 0
-        self.gemini_diario_data = ""
-        self.GEMINI_MAX_DIARIO = 1200  # limite seguro abaixo dos 1500/dia da free tier
         self.fretes_pendentes: dict[str, dict] = {}
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
@@ -1922,32 +1919,19 @@ class WhatsAppBot:
                     resposta_limpa = resposta
                     comando = None
                 else:
-                    # Verifica cota diária global
-                    hoje = time.strftime("%Y-%m-%d")
-                    if self.gemini_diario_data != hoje:
-                        self.gemini_diario = 0
-                        self.gemini_diario_data = hoje
-                    if self.gemini_diario >= self.GEMINI_MAX_DIARIO:
-                        resposta = "Desculpe, atingi o limite diário de atendimentos. Tente novamente amanhã."
-                        resposta_limpa = resposta
-                        comando = None
-                        print(f"  [GEMINI] Limite diário atingido ({self.GEMINI_MAX_DIARIO})", flush=True)
-                    else:
-                        # Reduz histórico para 10 mensagens (vs 30 antes)
-                        historico = get_historico_conversa(conv_id, limite=10)
-                        try:
-                            resposta = await asyncio.to_thread(gerar_resposta, historico)
-                            self.ultimo_gemini[telefone] = time.time()
-                            self.gemini_diario += 1
-                        except Exception as e:
-                            print(f"[GEMINI] {safe(e)}")
-                            agora_fb = time.time()
-                            ult_fb = self.ultimo_fallback.get(telefone, 0)
-                            if agora_fb - ult_fb > 3600:
-                                resposta = resposta_fallback(historico)
-                                self.ultimo_fallback[telefone] = agora_fb
-                            else:
-                                resposta = "Desculpe, estou temporariamente offline. Tente novamente mais tarde."
+                    historico = get_historico_conversa(conv_id, limite=10)
+                    try:
+                        resposta = await asyncio.to_thread(gerar_resposta, historico)
+                        self.ultimo_gemini[telefone] = time.time()
+                    except Exception as e:
+                        print(f"[GROQ] {safe(e)}")
+                        agora_fb = time.time()
+                        ult_fb = self.ultimo_fallback.get(telefone, 0)
+                        if agora_fb - ult_fb > 3600:
+                            resposta = resposta_fallback(historico)
+                            self.ultimo_fallback[telefone] = agora_fb
+                        else:
+                            resposta = "Desculpe, estou temporariamente offline. Tente novamente mais tarde."
 
                         comando = extrair_comando(resposta)
                         resposta_limpa = limpar_resposta(resposta)
