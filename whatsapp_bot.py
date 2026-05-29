@@ -469,7 +469,7 @@ class WhatsAppBot:
             from stripe_integration import verificar_pagamento
             conn = get_connection()
             rows = conn.execute(
-                "SELECT id, conversa_id, cliente_id, stripe_session_id FROM vendas WHERE payment_status='pendente' AND stripe_session_id IS NOT NULL"
+                "SELECT id, conversa_id, cliente_id, stripe_session_id, xlsx_path FROM vendas WHERE payment_status='pendente' AND stripe_session_id IS NOT NULL"
             ).fetchall()
             conn.close()
             for row in rows:
@@ -488,6 +488,7 @@ class WhatsAppBot:
                         f"✅ Pagamento confirmado! Seu pedido será processado em breve. Obrigado, {cli['nome']}!")
                     await self.enviar_para_cliente(SEU_NUMERO,
                         f"✅ PAGAMENTO CONFIRMADO (auto) - Venda #{venda['id']} - {cli['nome']}")
+                    self._atualizar_xlsx_venda_paga(venda.get("xlsx_path", ""))
                     print(f"[PAGAMENTO AUTO] Venda {venda['id']} confirmada via Stripe", flush=True)
         except Exception as e:
             print(f"[VERIFICAR PAGAMENTOS] {safe(e)}", flush=True)
@@ -1255,6 +1256,8 @@ class WhatsAppBot:
             ("EMBALAGEM", "PLÁSTICO BOLHA"),
             ("PESO", produto["peso"] if produto else "N/I"),
             ("VALOR DO FRETE FOB", ""),
+            ("PROTOCOLO TRANSPORTADORA", ""),
+            ("PRAZO DE ENTREGA", ""),
             ("STATUS", "Pendente"),
         ]
         wb = Workbook()
@@ -1269,6 +1272,22 @@ class WhatsAppBot:
         wb.save(caminho)
         print(f"  -> Solicitação salva: {nome_arquivo}", flush=True)
         return caminho
+
+    def _atualizar_xlsx_venda_paga(self, xlsx_path: str):
+        if not xlsx_path or not os.path.exists(xlsx_path):
+            return
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(xlsx_path)
+            ws = wb.active
+            for row in ws.iter_rows(min_row=2, max_col=2):
+                if row[0].value == "STATUS":
+                    row[1].value = "Pago"
+                    break
+            wb.save(xlsx_path)
+            print(f"  -> Status atualizado para 'Pago' em {os.path.basename(xlsx_path)}", flush=True)
+        except Exception as e:
+            print(f"  [xlsx] Erro ao atualizar venda paga: {safe(str(e)[:80])}", flush=True)
 
     async def _ler_msg_anterior_usuario(self):
         raw = await self.avaliar("""
@@ -1462,6 +1481,13 @@ class WhatsAppBot:
             },
             "status": "enviado",
         }
+        # Persiste xlsx_path na cotacao no banco
+        if xlsx_path:
+            from database import get_connection
+            conn = get_connection()
+            conn.execute("UPDATE cotacoes SET xlsx_path=? WHERE id=?", (xlsx_path, cot_id))
+            conn.commit()
+            conn.close()
         await self.enviar_para_cliente(telefone,
             f"Consultando frete FOB... (protocolo {request_id})")
         await self._enviar_fob_msg(produto, ci, request_id)
@@ -1564,14 +1590,15 @@ class WhatsAppBot:
                             wb = load_workbook(xlsx_path)
                             ws = wb.active
                             for row in ws.iter_rows(min_row=2, max_col=2):
-                                if row[0].value == "STATUS":
+                                campo = row[0].value
+                                if campo == "STATUS":
                                     row[1].value = "Cotado"
-                                    if valor > 0:
-                                        for row2 in ws.iter_rows(min_row=2, max_col=2):
-                                            if row2[0].value == "VALOR DO FRETE FOB":
-                                                row2[1].value = f"R$ {valor:.2f}"
-                                                break
-                                    break
+                                elif campo == "VALOR DO FRETE FOB" and valor > 0:
+                                    row[1].value = f"R$ {valor:.2f}"
+                                elif campo == "PROTOCOLO TRANSPORTADORA" and prot_transp:
+                                    row[1].value = prot_transp
+                                elif campo == "PRAZO DE ENTREGA" and prazo:
+                                    row[1].value = prazo
                             wb.save(xlsx_path)
                             print(f"  -> Status atualizado para 'Cotado' em {os.path.basename(xlsx_path)}", flush=True)
                         except Exception as e2:
@@ -1862,6 +1889,7 @@ class WhatsAppBot:
                     if cliente_dados and produto:
                         ult_cot = get_ultima_cotacao(conv_id)
                         valor_frete = ult_cot.get("valor_frete", 0) if ult_cot else 0
+                        xlsx_path = ult_cot.get("xlsx_path") if ult_cot else None
                         total = produto["preco"] + (valor_frete or 0)
                         link_pagamento, stripe_session_id = criar_checkout_pix_cartao(
                             nome_produto=produto["nome"],
@@ -1874,6 +1902,7 @@ class WhatsAppBot:
                             conv_id, cliente_dados.get("id"), produto["id"],
                             produto["preco"], valor_frete=valor_frete,
                             payment_url=link_pagamento, stripe_session_id=stripe_session_id,
+                            xlsx_path=xlsx_path,
                         )
                         atualizar_etapa_conversa(conv_id, "frete_aguardando_pagamento")
                         if link_pagamento:

@@ -92,6 +92,14 @@ def init_db():
         conn.execute("ALTER TABLE vendas ADD COLUMN stripe_session_id TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE cotacoes ADD COLUMN xlsx_path TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE vendas ADD COLUMN xlsx_path TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -240,15 +248,15 @@ def get_ultima_cotacao(conversa_id):
     return dict(row) if row else None
 
 
-def criar_venda(conversa_id, cliente_id, produto_id, valor_produto, valor_frete=None, payment_url=None, stripe_session_id=None):
+def criar_venda(conversa_id, cliente_id, produto_id, valor_produto, valor_frete=None, payment_url=None, stripe_session_id=None, xlsx_path=None):
     conn = get_connection()
     cursor = conn.cursor()
     valor_total = valor_produto + (valor_frete or 0)
     cursor.execute(
         """INSERT INTO vendas
-           (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total, payment_url, stripe_session_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total, payment_url, stripe_session_id),
+           (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total, payment_url, stripe_session_id, xlsx_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total, payment_url, stripe_session_id, xlsx_path),
     )
     conn.commit()
     venda_id = cursor.lastrowid
