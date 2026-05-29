@@ -1403,18 +1403,19 @@ class WhatsAppBot:
             transportadoras_reg[t["nome"]] = {
                 "telefone": t["numero"], "cot_id": cot_id,
                 "enviado_em": time.time(), "respondido": False,
-                "texto_antes": "",
+                "texto_antes": "", "tentativas": 0,
             }
         transportadoras_reg["FOB"] = {
             "telefone": self.TRANSPORTADORA_FOB, "cot_id": criar_cotacao(conv_id, "FOB"),
             "enviado_em": time.time(), "respondido": False,
-            "texto_antes": "",
+            "texto_antes": "", "tentativas": 0,
         }
         self.fretes_pendentes[request_id] = {
             "telefone": telefone,
             "nome_sidebar": nome_sidebar,
             "conv_id": conv_id,
             "produto": produto,
+            "cliente_info": ci,
             "transportadoras": transportadoras_reg,
             "status": "enviado",
         }
@@ -1531,11 +1532,12 @@ class WhatsAppBot:
             "conv_id": conv_id,
             "xlsx_path": xlsx_path,
             "produto": produto,
+            "cliente_info": ci,
             "transportadoras": {
                 "FOB": {
                     "telefone": self.TRANSPORTADORA_FOB, "cot_id": cot_id,
                     "enviado_em": time.time(), "respondido": False,
-                    "texto_antes": "",
+                    "texto_antes": "", "tentativas": 0,
                 },
             },
             "status": "enviado",
@@ -1594,6 +1596,18 @@ class WhatsAppBot:
                     prazo = self.extrair_prazo(resp)
                     prot_transp = self.extrair_protocolo_transportadora(resp)
                     print(f"  [frete] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
+
+                    incompleto = (valor <= 0) or (prazo is None) or (prot_transp is None)
+                    if incompleto:
+                        reg["tentativas"] = reg.get("tentativas", 0) + 1
+                        if reg["tentativas"] >= 3:
+                            print(f"  [frete] Resposta #{req_id} incompleta apos {reg['tentativas']} tentativas, encaminhando mesmo assim", flush=True)
+                        else:
+                            print(f"  [frete] Resposta #{req_id} incompleta (tentativa {reg['tentativas']}/3), reenviando solicitacao...", flush=True)
+                            cliente_info = req.get("cliente_info", {})
+                            await self._enviar_fob_msg(req["produto"], cliente_info, req_id)
+                            continue
+
                     reg["respondido"] = True
                     if reg.get("cot_id"):
                         atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
