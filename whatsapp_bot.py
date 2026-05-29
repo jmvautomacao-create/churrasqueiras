@@ -108,7 +108,6 @@ class WhatsAppBot:
                     self.fila_mensagens = asyncio.Queue()
                     self.fila_worker_task = asyncio.create_task(self._worker())
                     self.frete_monitor_task = asyncio.create_task(self._monitorar_fretes())
-                    self._recuperar_conversas_orfas()
                     await asyncio.sleep(2)
                     return True
 
@@ -119,7 +118,6 @@ class WhatsAppBot:
                     self.fila_mensagens = asyncio.Queue()
                     self.fila_worker_task = asyncio.create_task(self._worker())
                     self.frete_monitor_task = asyncio.create_task(self._monitorar_fretes())
-                    self._recuperar_conversas_orfas()
                     await asyncio.sleep(2)
                     return True
             except Exception as e:
@@ -163,21 +161,6 @@ class WhatsAppBot:
             await asyncio.sleep(1)
         print("  -> Página carregada (pode precisar de QR code).")
         await asyncio.sleep(2)
-
-    def _recuperar_conversas_orfas(self):
-        """Reseta conversas que ficaram em etapas de frete sem sessão ativa."""
-        from database import get_connection
-        conn = get_connection()
-        orfas = conn.execute(
-            "SELECT id FROM conversas WHERE status='ativo' AND etapa IN ('frete_aguardando','frete_aguardando_pagamento')"
-        ).fetchall()
-        if orfas:
-            conn.execute(
-                "UPDATE conversas SET etapa='menu_principal' WHERE status='ativo' AND etapa IN ('frete_aguardando','frete_aguardando_pagamento')"
-            )
-            conn.commit()
-            print(f"  -> {len(orfas)} conversa(s) órfã(s) recuperada(s) para menu_principal", flush=True)
-        conn.close()
 
     async def _garantir_pagina_principal(self):
         try:
@@ -1413,7 +1396,7 @@ class WhatsAppBot:
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA:    dias úteis"
         )
-        # Tenta enviar via sidebar (enviar_texto já gerencia o lock internamente)
+        # Tenta enviar via sidebar primeiro (sem page.goto)
         ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
         if ok:
             print(f"  -> FOB enviado #{request_id}", flush=True)
@@ -1423,25 +1406,24 @@ class WhatsAppBot:
         # Fallback: page.goto (se FOB não estiver na sidebar)
         print(f"  [frete] FOB não encontrado na sidebar, navegando direto...", flush=True)
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
-        async with self.sidebar_lock:
-            try:
-                await self.page.goto(url_fob, timeout=20000)
-                await asyncio.sleep(2)
-                caixa = await self._aguardar_input(10)
-                if caixa:
-                    try:
-                        await caixa.fill(msg)
-                    except Exception:
-                        await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                        await self.page.keyboard.type(msg, delay=20)
-                    await self._clicar_enviar(usar_enter=True)
-                    print(f"  -> FOB enviado #{request_id} (goto)", flush=True)
-                    self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
-                    self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
-                else:
-                    print(f"  [frete] Input não encontrado após navegação FOB", flush=True)
-            except Exception as e:
-                print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
+        try:
+            await self.page.goto(url_fob, timeout=20000)
+            await asyncio.sleep(2)
+            caixa = await self._aguardar_input(10)
+            if caixa:
+                try:
+                    await caixa.fill(msg)
+                except Exception:
+                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                    await self.page.keyboard.type(msg, delay=20)
+                await self._clicar_enviar(usar_enter=True)
+                print(f"  -> FOB enviado #{request_id} (goto)", flush=True)
+                self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
+                self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            else:
+                print(f"  [frete] Input não encontrado após navegação FOB", flush=True)
+        except Exception as e:
+            print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
 
     async def _finalizar_coleta_frete(self, conv_id: int, cliente_id: int, telefone: str, nome_sidebar: str = ""):
         cliente_completo = cliente_por_telefone(telefone)
@@ -1866,11 +1848,7 @@ class WhatsAppBot:
                 )
                 if not tem_pendente:
                     atualizar_etapa_conversa(conv_id, "menu_principal")
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
-                    self.processando.pop(telefone, None)
-                    if ok:
-                        print(f"  -> Menu reiniciado para {safe(remetente)} (frete_aguardando sem pendência)", flush=True)
-                    return
+                    etapa = "menu_principal"
                 else:
                     await self.enviar_para_cliente(telefone,
                         "Ainda estou aguardando a resposta da transportadora. Assim que receber, aviso você!")
@@ -1908,22 +1886,14 @@ class WhatsAppBot:
                         print(f"[PAGAMENTO] Stripe confirmou pagamento da venda {venda_pend['id']}", flush=True)
                         self.processando.pop(telefone, None)
                         return
-                    # Venda existe, mostra link
-                    link = venda_pend.get("payment_url", "")
-                    msg = "Seu pedido está aguardando a confirmação do pagamento.\n"
-                    if link:
-                        msg += f"💳 Link para pagamento: {link}"
-                    else:
-                        msg += "Assim que o pagamento for confirmado, avisaremos você!"
-                    await self.enviar_para_cliente(telefone, msg)
-                    self.processando.pop(telefone, None)
-                    return
-                # Sem venda pendente — recovery
-                atualizar_etapa_conversa(conv_id, "menu_principal")
-                ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                link = venda_pend.get("payment_url", "") if venda_pend else ""
+                msg = "Seu pedido está aguardando a confirmação do pagamento.\n"
+                if link:
+                    msg += f"💳 Link para pagamento: {link}"
+                else:
+                    msg += "Assim que o pagamento for confirmado, avisaremos você!"
+                await self.enviar_para_cliente(telefone, msg)
                 self.processando.pop(telefone, None)
-                if ok:
-                    print(f"  -> Menu reiniciado para {safe(remetente)} (frete_aguardando_pagamento sem venda)", flush=True)
                 return
 
             # --- FRETE: aguardando confirmacao do cliente ---
