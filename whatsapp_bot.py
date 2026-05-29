@@ -228,6 +228,11 @@ class WhatsAppBot:
             await self._enviar_video(conv_id, telefone, produto)
         elif opt == 5:
             atualizar_produto_interesse(conv_id, produto["id"])
+            from database import cliente_por_telefone
+            cli = cliente_por_telefone(telefone)
+            if cli and all([cli.get("nome"), cli.get("cpf_cnpj"), cli.get("endereco"), cli.get("cidade"), cli.get("estado"), cli.get("cep")]):
+                await self._finalizar_coleta_frete(conv_id, cli["id"], telefone, nome_sidebar)
+                return
             atualizar_etapa_conversa(conv_id, "frete_nome")
             await self.enviar_para_cliente(telefone,
                 f"Para solicitar o frete da {produto['nome']}, preciso de alguns dados.\n\n"
@@ -2050,8 +2055,13 @@ class WhatsAppBot:
                         return
 
                     if acao == "frete":
-                        atualizar_etapa_conversa(conv_id, "frete_nome")
                         atualizar_produto_interesse(conv_id, produto["id"])
+                        from database import cliente_por_telefone
+                        cli = cliente_por_telefone(telefone)
+                        if cli and all([cli.get("nome"), cli.get("cpf_cnpj"), cli.get("endereco"), cli.get("cidade"), cli.get("estado"), cli.get("cep")]):
+                            await self._finalizar_coleta_frete(conv_id, cli["id"], telefone, nome_sidebar)
+                            return
+                        atualizar_etapa_conversa(conv_id, "frete_nome")
                         await self.enviar_para_cliente(telefone,
                             f"Para solicitar o frete da {produto['nome']}, preciso de alguns dados.\n\n"
                             f"Primeiro, informe seu NOME completo:")
