@@ -1439,7 +1439,7 @@ class WhatsAppBot:
         await self.enviar_para_cliente(telefone,
             f"Obrigado, {nome_cliente}! Sua solicitação de frete foi recebida com sucesso.\n"
             f"Estou consultando a transportadora, aguarde um momento...")
-        await self._solicitar_frete_fob(conv_id, telefone, nome_sidebar, caminho_xlsx)
+        await self._solicitar_frete_fob(conv_id, telefone, nome_sidebar, str(caminho_xlsx))
 
     async def _solicitar_frete_fob(self, conv_id: int, telefone: str, nome_sidebar: str = "", xlsx_path: str = ""):
         cliente = cliente_por_telefone(telefone)
@@ -1485,7 +1485,7 @@ class WhatsAppBot:
         if xlsx_path:
             from database import get_connection
             conn = get_connection()
-            conn.execute("UPDATE cotacoes SET xlsx_path=? WHERE id=?", (xlsx_path, cot_id))
+            conn.execute("UPDATE cotacoes SET xlsx_path=? WHERE id=?", (str(xlsx_path), cot_id))
             conn.commit()
             conn.close()
         await self.enviar_para_cliente(telefone,
