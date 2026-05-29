@@ -230,6 +230,16 @@ def atualizar_cotacao(cotacao_id, valor_frete=None, prazo=None, status=None):
     conn.close()
 
 
+def get_ultima_cotacao(conversa_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM cotacoes WHERE conversa_id = ? ORDER BY criado_em DESC LIMIT 1",
+        (conversa_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def criar_venda(conversa_id, cliente_id, produto_id, valor_produto, valor_frete=None, payment_url=None, stripe_session_id=None):
     conn = get_connection()
     cursor = conn.cursor()

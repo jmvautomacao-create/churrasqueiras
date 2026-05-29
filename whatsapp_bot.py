@@ -14,7 +14,7 @@ from database import (
     cliente_por_telefone, criar_cliente, criar_conversa, salvar_mensagem,
     atualizar_etapa_conversa, atualizar_produto_interesse, criar_cotacao,
     atualizar_cotacao, criar_venda, get_historico_conversa, get_conversa_ativa,
-    atualizar_cliente,
+    atualizar_cliente, get_ultima_cotacao,
 )
 from gemini_agent import gerar_resposta, resposta_fallback, extrair_comando, limpar_resposta
 from stripe_integration import criar_checkout_pix_cartao
@@ -1761,14 +1761,41 @@ class WhatsAppBot:
                     cliente_dados = cliente_por_telefone(telefone)
                     produto = produto_por_id(conversa.get("produto_interesse_id") or 0)
                     if cliente_dados and produto:
-                        venda_id = criar_venda(conv_id, cliente_dados.get("id"), produto["id"], produto["preco"])
+                        ult_cot = get_ultima_cotacao(conv_id)
+                        valor_frete = ult_cot.get("valor_frete", 0) if ult_cot else 0
+                        total = produto["preco"] + (valor_frete or 0)
+                        link_pagamento = criar_checkout_pix_cartao(
+                            nome_produto=produto["nome"],
+                            valor_total=total,
+                            cliente_nome=cliente_dados.get("nome", ""),
+                            cliente_telefone=telefone,
+                            venda_id=0,
+                        )
+                        stripe_session_id = None
+                        if link_pagamento:
+                            import re
+                            m = re.search(r"/session/([^/]+)", link_pagamento)
+                            if m:
+                                stripe_session_id = m.group(1)
+                        venda_id = criar_venda(
+                            conv_id, cliente_dados.get("id"), produto["id"],
+                            produto["preco"], valor_frete=valor_frete,
+                            payment_url=link_pagamento, stripe_session_id=stripe_session_id,
+                        )
                         atualizar_etapa_conversa(conv_id, "fechada")
-                        await self.enviar_para_cliente(telefone,
-                            f"Pedido confirmado!\nProduto: {produto['nome']}\n"
-                            f"Total: R$ {produto['preco']:.2f}\nObrigado pela compra!")
+                        if link_pagamento:
+                            await self.enviar_para_cliente(telefone,
+                                f"Pedido confirmado!\nProduto: {produto['nome']}\n"
+                                f"Total: R$ {total:.2f}\n\n"
+                                f"💳 Link para pagamento (Pix ou Cartão):\n{link_pagamento}")
+                        else:
+                            await self.enviar_para_cliente(telefone,
+                                f"Pedido confirmado!\nProduto: {produto['nome']}\n"
+                                f"Total: R$ {total:.2f}\nObrigado pela compra!")
                         await self.enviar_para_cliente(SEU_NUMERO,
                             f"VENDA!\n{cliente_dados.get('nome','')} - Tel: {telefone}\n"
-                            f"{produto['nome']} - R$ {produto['preco']:.2f}\nID: {venda_id}")
+                            f"{produto['nome']} - R$ {total:.2f}\n"
+                            f"Link: {link_pagamento or 'N/D'}\nID: {venda_id}")
                         print(f"VENDA: {safe(cliente_dados.get('nome',''))} - {safe(produto['nome'])}")
                     else:
                         await self.enviar_para_cliente(telefone, "Erro ao processar confirmação.")
