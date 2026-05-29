@@ -10,7 +10,7 @@ def criar_checkout_pix_cartao(
     cliente_nome: str,
     cliente_telefone: str,
     venda_id: int,
-) -> str | None:
+) -> tuple[str, str] | tuple[None, None]:
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
@@ -32,10 +32,10 @@ def criar_checkout_pix_cartao(
             success_url="https://web.whatsapp.com",
             cancel_url="https://web.whatsapp.com",
         )
-        return session.url
+        return session.url, session.id
     except Exception as e:
         print(f"[STRIPE] Erro ao criar checkout: {e}")
-        return None
+        return None, None
 
 
 def verificar_pagamento(session_id: str) -> bool:

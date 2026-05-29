@@ -1823,18 +1823,13 @@ class WhatsAppBot:
                         ult_cot = get_ultima_cotacao(conv_id)
                         valor_frete = ult_cot.get("valor_frete", 0) if ult_cot else 0
                         total = produto["preco"] + (valor_frete or 0)
-                        link_pagamento = criar_checkout_pix_cartao(
+                        link_pagamento, stripe_session_id = criar_checkout_pix_cartao(
                             nome_produto=produto["nome"],
                             valor_total=total,
                             cliente_nome=cliente_dados.get("nome", ""),
                             cliente_telefone=telefone,
                             venda_id=0,
                         )
-                        stripe_session_id = None
-                        if link_pagamento:
-                            m = re.search(r"/session/([^/]+)", link_pagamento)
-                            if m:
-                                stripe_session_id = m.group(1)
                         venda_id = criar_venda(
                             conv_id, cliente_dados.get("id"), produto["id"],
                             produto["preco"], valor_frete=valor_frete,
@@ -2062,7 +2057,7 @@ class WhatsAppBot:
             atualizar_etapa_conversa(conv_id, "fechada")
             total = comando["valor_total"]
             # Gera link de pagamento Stripe (Pix + Cartão)
-            link_pagamento = criar_checkout_pix_cartao(
+            link_pagamento, stripe_session_id = criar_checkout_pix_cartao(
                 nome_produto=produto["nome"],
                 valor_total=total,
                 cliente_nome=comando["cliente_nome"],
@@ -2072,7 +2067,8 @@ class WhatsAppBot:
             if link_pagamento:
                 from database import get_connection
                 conn = get_connection()
-                conn.execute("UPDATE vendas SET payment_url=? WHERE id=?", (link_pagamento, venda_id))
+                conn.execute("UPDATE vendas SET payment_url=?, stripe_session_id=? WHERE id=?",
+                             (link_pagamento, stripe_session_id, venda_id))
                 conn.commit()
                 conn.close()
                 await self.enviar_para_cliente(telefone,
