@@ -1395,35 +1395,36 @@ class WhatsAppBot:
         await self._enviar_fob_msg(produto, ci, request_id)
 
     async def _enviar_fob_msg(self, produto, cliente_info: dict, request_id: str):
+        nome = cliente_info.get("nome", "N/I")
+        endereco = cliente_info.get("endereco", "N/I")
+        msg = (
+            f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
+            f"{'='*30}\n"
+            f"Cliente: {nome}\n"
+            f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
+            f"Produto: {produto['nome']}\n"
+            f"NF: R$ {produto['preco']:.2f}\n"
+            f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
+            f"Endereço: {endereco}\n"
+            f"{'='*30}\n"
+            f"Favor retornar as informações abaixo:\n\n"
+            f"Protocolo de Solicitação: {request_id}\n"
+            f"Protocolo Transportadora: \n"
+            f"VALOR DO FRETE: R$ \n"
+            f"PRAZO DE ENTREGA:    dias úteis"
+        )
+        # Tenta enviar via sidebar primeiro
         async with self.sidebar_lock:
-            nome = cliente_info.get("nome", "N/I")
-            endereco = cliente_info.get("endereco", "N/I")
-            msg = (
-                f"SOLICITAÇÃO DE COTAÇÃO DE FRETE\n"
-                f"{'='*30}\n"
-                f"Cliente: {nome}\n"
-                f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
-                f"Produto: {produto['nome']}\n"
-                f"NF: R$ {produto['preco']:.2f}\n"
-                f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
-                f"Endereço: {endereco}\n"
-                f"{'='*30}\n"
-                f"Favor retornar as informações abaixo:\n\n"
-                f"Protocolo de Solicitação: {request_id}\n"
-                f"Protocolo Transportadora: \n"
-                f"VALOR DO FRETE: R$ \n"
-                f"PRAZO DE ENTREGA:    dias úteis"
-            )
-            # Tenta enviar via sidebar primeiro (sem page.goto)
             ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
-            if ok:
-                print(f"  -> FOB enviado #{request_id}", flush=True)
-                self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
-                self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
-                return
-            # Fallback: page.goto (se FOB não estiver na sidebar)
-            print(f"  [frete] FOB não encontrado na sidebar, navegando direto...", flush=True)
-            url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
+        if ok:
+            print(f"  -> FOB enviado #{request_id}", flush=True)
+            self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
+            self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            return
+        # Fallback: page.goto (se FOB não estiver na sidebar)
+        print(f"  [frete] FOB não encontrado na sidebar, navegando direto...", flush=True)
+        url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
+        async with self.sidebar_lock:
             try:
                 await self.page.goto(url_fob, timeout=20000)
                 await asyncio.sleep(2)
