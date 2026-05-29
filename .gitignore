@@ -4,6 +4,7 @@ data/
 database/agente.db
 *.db
 .env
+config.py
 solicitacoes/
 ~$*
 bot_log.txt
