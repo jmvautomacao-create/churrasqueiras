@@ -80,6 +80,19 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    try:
+        conn.execute("ALTER TABLE vendas ADD COLUMN payment_url TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE vendas ADD COLUMN payment_status TEXT DEFAULT 'pendente'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE vendas ADD COLUMN stripe_session_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -217,15 +230,15 @@ def atualizar_cotacao(cotacao_id, valor_frete=None, prazo=None, status=None):
     conn.close()
 
 
-def criar_venda(conversa_id, cliente_id, produto_id, valor_produto, valor_frete=None):
+def criar_venda(conversa_id, cliente_id, produto_id, valor_produto, valor_frete=None, payment_url=None, stripe_session_id=None):
     conn = get_connection()
     cursor = conn.cursor()
     valor_total = valor_produto + (valor_frete or 0)
     cursor.execute(
         """INSERT INTO vendas
-           (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total),
+           (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total, payment_url, stripe_session_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (conversa_id, cliente_id, produto_id, valor_produto, valor_frete, valor_total, payment_url, stripe_session_id),
     )
     conn.commit()
     venda_id = cursor.lastrowid

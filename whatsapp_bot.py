@@ -17,6 +17,7 @@ from database import (
     atualizar_cliente,
 )
 from gemini_agent import gerar_resposta, resposta_fallback, extrair_comando, limpar_resposta
+from stripe_integration import criar_checkout_pix_cartao
 from produtos import valor_produto, produto_por_id, detalhar
 
 
@@ -1971,12 +1972,33 @@ class WhatsAppBot:
                 return
             venda_id = criar_venda(conv_id, cliente_id, produto["id"], produto["preco"])
             atualizar_etapa_conversa(conv_id, "fechada")
-            await self.enviar_para_cliente(telefone,
-                f"Venda confirmada!\nProduto: {produto['nome']}\n"
-                f"Total: R$ {comando['valor_total']:.2f}\nObrigado!")
+            total = comando["valor_total"]
+            # Gera link de pagamento Stripe (Pix + Cartão)
+            link_pagamento = criar_checkout_pix_cartao(
+                nome_produto=produto["nome"],
+                valor_total=total,
+                cliente_nome=comando["cliente_nome"],
+                cliente_telefone=telefone,
+                venda_id=venda_id,
+            )
+            if link_pagamento:
+                from database import get_connection
+                conn = get_connection()
+                conn.execute("UPDATE vendas SET payment_url=? WHERE id=?", (link_pagamento, venda_id))
+                conn.commit()
+                conn.close()
+                await self.enviar_para_cliente(telefone,
+                    f"Venda confirmada!\nProduto: {produto['nome']}\n"
+                    f"Total: R$ {total:.2f}\n\n"
+                    f"💳 Link para pagamento (Pix ou Cartão):\n{link_pagamento}")
+            else:
+                await self.enviar_para_cliente(telefone,
+                    f"Venda confirmada!\nProduto: {produto['nome']}\n"
+                    f"Total: R$ {total:.2f}\nObrigado!")
             await self.enviar_para_cliente(SEU_NUMERO,
                 f"VENDA!\n{comando['cliente_nome']} - Tel: {telefone}\n"
-                f"{produto['nome']} - R$ {comando['valor_total']:.2f}\nID: {venda_id}")
+                f"{produto['nome']} - R$ {total:.2f}\n"
+                f"Link: {link_pagamento or 'N/D'}\nID: {venda_id}")
             print(f"VENDA REGISTRADA: {safe(comando['cliente_nome'])} - {safe(produto['nome'])}")
 
     def extrair_valor_frete(self, texto: str) -> float:
