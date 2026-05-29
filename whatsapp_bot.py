@@ -177,6 +177,22 @@ class WhatsAppBot:
         except:
             pass
 
+    async def _perguntar_nova_compra_ou_info(
+        self, telefone: str, conv_id: int, nome_cliente: str,
+        *, alterar_etapa: bool = False
+    ) -> None:
+        if alterar_etapa:
+            atualizar_etapa_conversa(conv_id, "pos_compra")
+        msg = (
+            f'Olá! Seja Bem-vindo "{nome_cliente}", '
+            f"digite um número das opções abaixo:\n\n"
+            f"[1] Nova compra\n"
+            f"[2] Informações da compra anterior"
+        )
+        await self.enviar_para_cliente(telefone, msg)
+        salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
+        self.processando.pop(telefone, None)
+
     async def _iniciar_apresentacao_menu(self, telefone: str, conv_id: int, nome_sidebar: str = "") -> bool:
         chaves = [k for k in self.ultimo_visto_texto if k.startswith(f"{telefone}|")]
         for k in chaves:
@@ -1728,11 +1744,7 @@ class WhatsAppBot:
                     etapa_conv = row2["etapa"] if row2 else ""
                     conn2.close()
                     if etapa_conv == "pos_compra":
-                        await self.enviar_para_cliente(telefone,
-                            "Olá! Vi que você já é nosso cliente.\n\n"
-                            "[1] Realizar uma nova compra\n"
-                            "[2] Informações sobre a compra anterior")
-                        salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
+                        await self._perguntar_nova_compra_ou_info(telefone, conv_id, remetente)
                         return
                 ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                 self.processando.pop(telefone, None)
@@ -1755,26 +1767,10 @@ class WhatsAppBot:
 
             etapa = (conversa or {}).get("etapa", "")
 
-            # --- CLIENTE COM COMPRA ANTERIOR em estágio neutro: pergunta o que quer ---
-            if etapa in ("menu_principal", "saudacao", "") and tem_compra_finalizada(telefone):
-                atualizar_etapa_conversa(conv_id, "pos_compra")
-                await self.enviar_para_cliente(telefone,
-                    "Olá! Vi que você já é nosso cliente.\n\n"
-                    "[1] Realizar uma nova compra\n"
-                    "[2] Informações sobre a compra anterior")
-                salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
-                self.processando.pop(telefone, None)
-                return
-
-            # --- VENDA FINALIZADA: pergunta nova compra ou info ---
-            if etapa == "fechada":
-                atualizar_etapa_conversa(conv_id, "pos_compra")
-                await self.enviar_para_cliente(telefone,
-                    "Olá! Vi que você já é nosso cliente.\n\n"
-                    "[1] Realizar uma nova compra\n"
-                    "[2] Informações sobre a compra anterior")
-                salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
-                self.processando.pop(telefone, None)
+            # --- CLIENTE COM COMPRA ANTERIOR: pergunta nova compra ou informações ---
+            if ((etapa in ("menu_principal", "saudacao", "") and tem_compra_finalizada(telefone)) or etapa == "fechada"):
+                nome_cliente = (conversa or {}).get("nome", remetente)
+                await self._perguntar_nova_compra_ou_info(telefone, conv_id, nome_cliente, alterar_etapa=True)
                 return
 
             # --- POS-COMPRA: nova compra ou informações ---
@@ -1802,11 +1798,8 @@ class WhatsAppBot:
                     self.processando.pop(telefone, None)
                     return
                 else:
-                    await self.enviar_para_cliente(telefone,
-                        "Por favor, escolha:\n\n"
-                        "[1] Nova compra\n"
-                        "[2] Informações da compra anterior")
-                    self.processando.pop(telefone, None)
+                    nome_cliente = (conversa or {}).get("nome", remetente)
+                    await self._perguntar_nova_compra_ou_info(telefone, conv_id, nome_cliente)
                     return
 
             # --- FLUXO DE FRETE: coleta de dados ---
