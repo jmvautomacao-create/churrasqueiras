@@ -10,7 +10,7 @@ def criar_estrutura_medias():
         dir_path.mkdir(parents=True, exist_ok=True)
 
         print(f"[PASTA] {dir_path}/")
-        print(f"   - Adicione aqui as fotos (jpg, png) e videos (mp4)")
+        print(f"   - Adicione aqui as fotos (jpg, png) e vídeos (mp4)")
         print(f"   - Produto: {produto['nome']}")
         print()
 
@@ -18,7 +18,7 @@ def criar_estrutura_medias():
     print("\nInstruções:")
     print("1. Coloque as fotos (jpg/png) e vídeos (mp4) nas pastas correspondentes")
     print("2. O bot enviará a primeira foto/vídeo que encontrar em cada pasta")
-    print("3. Nomeie os arquivos de forma descritiva (ex: foto1.jpg, video.mp4)")
+    print("3. Nomeie os arquivos de forma descritiva (ex: foto1.jpg, vídeo.mp4)")
 
 
 if __name__ == "__main__":

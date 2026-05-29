@@ -60,6 +60,12 @@ class WhatsAppBot:
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
         self._cache_cep: dict[str, dict] = {}
+        self._cache_endereco: dict[str, dict] = {}
+        self.fila_mensagens: asyncio.Queue | None = None
+        self.fila_pendentes: set[str] = set()
+        self.fila_worker_task: asyncio.Task | None = None
+        self.ultimo_aviso_fila: dict[str, float] = {}
+        self.sidebar_lock = asyncio.Lock()
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -67,7 +73,7 @@ class WhatsAppBot:
 
         sessao_dir = Path(user_data_dir)
         sessao_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Sessao: {user_data_dir}")
+        print(f"Sessão: {user_data_dir}")
 
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir, headless=False,
@@ -80,7 +86,7 @@ class WhatsAppBot:
             await self.avaliar("() => { window.focus(); window.moveTo(0, 0); window.resizeTo(1280, 900); }")
         except:
             pass
-        print("Aguardando login. Se ja estiver logado, isso leva segundos.")
+        print("Aguardando login. Se já estiver logado, isso leva segundos.")
 
         for i in range(120):
             await asyncio.sleep(2)
@@ -99,6 +105,8 @@ class WhatsAppBot:
                 if panel:
                     print("Login confirmado!")
                     self.logado = True
+                    self.fila_mensagens = asyncio.Queue()
+                    self.fila_worker_task = asyncio.create_task(self._worker())
                     await asyncio.sleep(2)
                     return True
 
@@ -106,6 +114,8 @@ class WhatsAppBot:
                 if side:
                     print("Sidebar detectada - logado!")
                     self.logado = True
+                    self.fila_mensagens = asyncio.Queue()
+                    self.fila_worker_task = asyncio.create_task(self._worker())
                     await asyncio.sleep(2)
                     return True
             except Exception as e:
@@ -121,18 +131,18 @@ class WhatsAppBot:
         except Exception as e:
             msg = str(e).lower()
             if "context" in msg or "navigation" in msg or "target closed" in msg:
-                print(f"  -> Pagina perdida durante evaluate: {safe(str(e)[:60])}")
+                print(f"  -> Página perdida durante evaluate: {safe(str(e)[:60])}")
             raise
 
     async def _recuperar_pagina(self):
-        print("  -> Recuperando pagina...")
+        print("  -> Recuperando página...")
         await asyncio.sleep(2)
         try:
             if not self.page or self.page.is_closed():
                 self.page = await self.context.new_page()
             await self.page.goto("https://web.whatsapp.com", wait_until="load", timeout=30000)
         except Exception as e:
-            print(f"  -> Erro na recuperacao: {safe(str(e)[:60])}, tentando nova pagina...")
+            print(f"  -> Erro na recuperação: {safe(str(e)[:60])}, tentando nova página...")
             try:
                 self.page = await self.context.new_page()
                 await self.page.goto("https://web.whatsapp.com", wait_until="load", timeout=30000)
@@ -141,13 +151,13 @@ class WhatsAppBot:
         for i in range(15):
             try:
                 if await self.page.query_selector('#side'):
-                    print("  -> Login confirmado apos recuperacao.")
+                    print("  -> Login confirmado após recuperação.")
                     await asyncio.sleep(2)
                     return
             except:
                 pass
             await asyncio.sleep(1)
-        print("  -> Pagina carregada (pode precisar de QR code).")
+        print("  -> Página carregada (pode precisar de QR code).")
         await asyncio.sleep(2)
 
     async def _garantir_pagina_principal(self):
@@ -351,6 +361,13 @@ class WhatsAppBot:
         for k in list(self.processando):
             if agora - self.ultimo_processamento.get(k, 0) > 300:
                 del self.processando[k]
+        # Limpa travamentos na fila de atendimento
+        for k in list(self.fila_pendentes):
+            if agora - self.ultimo_processamento.get(k, 0) > 600:
+                self.fila_pendentes.discard(k)
+        for k in list(self.ultimo_aviso_fila):
+            if agora - self.ultimo_aviso_fila[k] > 7200:
+                del self.ultimo_aviso_fila[k]
         # Limpa dedup de respostas de frete (retem apenas ultima 1h)
         self._respostas_frete_vistas.clear()
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
@@ -432,6 +449,35 @@ class WhatsAppBot:
         """
         return await self.avaliar(codigo, mapa_str)
 
+    async def _worker(self):
+        while True:
+            try:
+                item = await self.fila_mensagens.get()
+                nome_key, texto, telefone, nome_raw = item
+                try:
+                    print(f"\n>>> [WORKER] Processando {safe(nome_raw)}: {safe(texto)}", flush=True)
+                    if texto:
+                        antes = self.ultimo_envio.get(telefone, 0)
+                    await self.processar_mensagem(nome_key, texto, telefone, nome_raw)
+                    if texto:
+                        depois = self.ultimo_envio.get(telefone, 0)
+                        if depois > antes:
+                            self.ultimo_visto_texto[f"{telefone}|{self._n(texto)}"] = time.time()
+                except Exception as e:
+                    print(f"[WORKER ERRO] {safe(e)}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    self.fila_pendentes.discard(telefone)
+                    self.fila_mensagens.task_done()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[WORKER FATAL] {safe(e)}", flush=True)
+                import traceback
+                traceback.print_exc()
+                await asyncio.sleep(5)
+
     async def escutar_mensagens(self):
         print("\n" + "="*50)
         print("Ouvindo mensagens... Ctrl+C para parar.")
@@ -447,7 +493,9 @@ class WhatsAppBot:
                 erros_consecutivos = 0
 
                 if c % 10 == 0:
-                    print(f"  [{c}] heartbeat - {len(chats)} chats, {len(self.apresentacao_menu)} menu, {len(self.apresentacao_submenu)} submenu")
+                    queue_size = self.fila_mensagens.qsize() if self.fila_mensagens else 0
+                    pendentes = len(self.fila_pendentes)
+                    print(f"  [{c}] heartbeat - {len(chats)} chats, fila: {queue_size}, pendentes: {pendentes}, menu: {len(self.apresentacao_menu)}, submenu: {len(self.apresentacao_submenu)}")
 
                 vistos_ciclo = set()
                 for chat in chats:
@@ -477,7 +525,7 @@ class WhatsAppBot:
 
                     if c % 30 == 0 or nao_lida:
                         marca = f" [tel:{telefone}]" if telefone else ""
-                        print(f"  [{c}] {safe(nome_raw)}{marca}: {'[NAO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
+                        print(f"  [{c}] {safe(nome_raw)}{marca}: {'[NÃO LIDA] ' if nao_lida else ''}{safe(texto[:60])}")
 
                     # Dedup: sem texto nao processar repetido
                     agora = time.time()
@@ -485,7 +533,7 @@ class WhatsAppBot:
                         ultimo = self.ultimo_processamento.get(telefone, 0)
                         if agora - ultimo < 120:
                             if c % 30 == 0:
-                                print(f"  [{c} SKIP] {safe(nome_raw)}: sem texto, processado ha {agora-ultimo:.0f}s")
+                                print(f"  [{c} SKIP] {safe(nome_raw)}: sem texto, processado há {agora-ultimo:.0f}s")
                             continue
 
                     # Dedup: mesma mensagem do usuario ja processada com sucesso
@@ -496,7 +544,7 @@ class WhatsAppBot:
                         ult_visto = self.ultimo_visto_texto.get(chave, 0)
                         if agora - ult_visto < dedup_window:
                             if c % 30 == 0:
-                                print(f"  [{c} SKIP] {safe(nome_raw)}: texto ja processado ({agora-ult_visto:.0f}s atras)")
+                                print(f"  [{c} SKIP] {safe(nome_raw)}: texto já processado ({agora-ult_visto:.0f}s atrás)")
                             continue
 
                     # Pula se o texto da sidebar for igual ao que o bot acabou de enviar
@@ -506,7 +554,7 @@ class WhatsAppBot:
                         envio_norm = re.sub(r'\s+', ' ', ultimo_env).strip()
                         if envio_norm.startswith(texto_norm) or texto_norm.startswith(envio_norm):
                             if c % 30 == 0:
-                                print(f"  [{c} SKIP] {safe(nome_raw)}: texto igual ao ultimo envio")
+                                print(f"  [{c} SKIP] {safe(nome_raw)}: texto igual ao último envio")
                             continue
 
                     # Fallback: detectar por mudanca de texto (msgs sem badge)
@@ -539,13 +587,19 @@ class WhatsAppBot:
                     if nao_lida:
                         self.ultimo_processamento[telefone] = agora
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome_raw)}: {safe(texto)}", flush=True)
-                        if texto:
-                            antes = self.ultimo_envio.get(telefone, 0)
-                        await self.processar_mensagem(nome_key, texto, telefone, nome_raw)
-                        if texto:
-                            depois = self.ultimo_envio.get(telefone, 0)
-                            if depois > antes:
-                                self.ultimo_visto_texto[f"{telefone}|{self._n(texto)}"] = time.time()
+                        if telefone in self.fila_pendentes:
+                            agora_aviso = time.time()
+                            ult_aviso = self.ultimo_aviso_fila.get(telefone, 0)
+                            if agora_aviso - ult_aviso > 30:
+                                pos = self.fila_mensagens.qsize() + 1
+                                await self.enviar_texto(telefone,
+                                    f"Estou atendendo outros clientes no momento. "
+                                    f"Sua mensagem está na fila (posição ~{pos}). "
+                                    f"Assim que possível, atenderei você!")
+                                self.ultimo_aviso_fila[telefone] = agora_aviso
+                        else:
+                            self.fila_pendentes.add(telefone)
+                            await self.fila_mensagens.put((nome_key, texto, telefone, nome_raw))
                         continue
 
                 self.primeiro_ciclo = False
@@ -562,13 +616,13 @@ class WhatsAppBot:
             except asyncio.CancelledError:
                 break
             except json.JSONDecodeError:
-                print(f"  [DEBUG] JSON invalido: {safe(raw)[:100]}")
+                print(f"  [DEBUG] JSON inválido: {safe(raw)[:100]}")
                 erros_consecutivos += 1
                 await asyncio.sleep(5)
             except Exception as e:
                 msg = str(e).lower()
                 if "context" in msg or "navigation" in msg or "target closed" in msg:
-                    print(f"  [NAV] Pagina perdida, tentando recuperar...")
+                    print(f"  [NAV] Página perdida, tentando recuperar...")
                     await self._recuperar_pagina()
                     erros_consecutivos = 0
                 else:
@@ -579,7 +633,7 @@ class WhatsAppBot:
                 await asyncio.sleep(5)
 
             if erros_consecutivos > 10:
-                print("[AVISO] Muitos erros consecutivos. Reiniciando pagina...")
+                print("[AVISO] Muitos erros consecutivos. Reiniciando página...")
                 await self._recuperar_pagina()
                 erros_consecutivos = 0
 
@@ -607,7 +661,7 @@ class WhatsAppBot:
     async def _digitar(self, texto: str):
         caixa = await self._aguardar_input(4)
         if not caixa:
-            print("  [DIG] Input nao encontrado")
+            print("  [DIG] Input não encontrado")
             return False
         try:
             await caixa.fill(texto)
@@ -765,58 +819,58 @@ class WhatsAppBot:
         """)
 
     async def enviar_texto(self, numero: str, texto: str, nome_sidebar: str = "") -> bool:
-        try:
-            if not nome_sidebar:
-                nome_sidebar = next((n for n, t in self.mapa_contatos.items() if t == numero), "")
-            nomes = [nome_sidebar] if nome_sidebar else []
-            nomes += [n for n, t in self.mapa_contatos.items() if t == numero]
-            chat_aberto = False
-            # Fast path: check if current chat is already the target
-            for nome in nomes:
-                if not nome:
-                    continue
-                if await self._chat_ja_aberto(nome):
-                    chat_aberto = True
-                    break
-            if not chat_aberto:
+        async with self.sidebar_lock:
+            try:
+                if not nome_sidebar:
+                    nome_sidebar = next((n for n, t in self.mapa_contatos.items() if t == numero), "")
+                nomes = [nome_sidebar] if nome_sidebar else []
+                nomes += [n for n, t in self.mapa_contatos.items() if t == numero]
+                chat_aberto = False
+                # Fast path: check if current chat is already the target
                 for nome in nomes:
                     if not nome:
                         continue
-                    if await self._abrir_chat_sidebar(nome, numero):
+                    if await self._chat_ja_aberto(nome):
                         chat_aberto = True
                         break
-            if not chat_aberto:
-                # Ultimo recurso: busca por telefone diretamente
-                if await self._abrir_chat_sidebar(telefone=numero):
-                    chat_aberto = True
-            if not chat_aberto:
-                print(f"  -> Nao foi possivel abrir chat para {numero}", flush=True)
-                return False
+                if not chat_aberto:
+                    for nome in nomes:
+                        if not nome:
+                            continue
+                        if await self._abrir_chat_sidebar(nome, numero):
+                            chat_aberto = True
+                            break
+                if not chat_aberto:
+                    if await self._abrir_chat_sidebar(telefone=numero):
+                        chat_aberto = True
+                if not chat_aberto:
+                    print(f"  -> Não foi possível abrir chat para {numero}", flush=True)
+                    return False
 
-            tem_input = await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=5000)
-            if not tem_input:
-                print(f"  -> Input nao disponivel para {numero}", flush=True)
-                return False
+                tem_input = await self.page.wait_for_selector(self.SELETOR_INPUT, timeout=5000)
+                if not tem_input:
+                    print(f"  -> Input não disponível para {numero}", flush=True)
+                    return False
 
-            ok_dig = await self._digitar(texto)
-            if not ok_dig:
-                print(f"  -> Input nao disponivel para {numero}", flush=True)
-                return False
-            if await self._clicar_enviar():
-                print(f"  -> Enviado para {numero}", flush=True)
-                primeira_linha = texto.split("\n")[0][:80]
-                self.ultimo_texto_chat[numero] = primeira_linha
-                self.ultimo_envio[numero] = time.time()
-                self.ultimo_envio_texto[numero] = texto
-                if primeira_linha:
-                    self.ultimo_visto_texto[f"{numero}|{self._n(primeira_linha)}"] = time.time()
-                return True
+                ok_dig = await self._digitar(texto)
+                if not ok_dig:
+                    print(f"  -> Input não disponível para {numero}", flush=True)
+                    return False
+                if await self._clicar_enviar():
+                    print(f"  -> Enviado para {numero}", flush=True)
+                    primeira_linha = texto.split("\n")[0][:80]
+                    self.ultimo_texto_chat[numero] = primeira_linha
+                    self.ultimo_envio[numero] = time.time()
+                    self.ultimo_envio_texto[numero] = texto
+                    if primeira_linha:
+                        self.ultimo_visto_texto[f"{numero}|{self._n(primeira_linha)}"] = time.time()
+                    return True
 
-            print(f"  -> Falha ao enviar para {numero}", flush=True)
-            return False
-        except Exception as e:
-            print(f"[ERRO ENVIO] {safe(e)}", flush=True)
-            return False
+                print(f"  -> Falha ao enviar para {numero}", flush=True)
+                return False
+            except Exception as e:
+                print(f"[ERRO ENVIO] {safe(e)}", flush=True)
+                return False
 
     async def _clicar_anexar(self):
         btn = self.page.locator('button[aria-label="Anexar"], button[aria-label="Attach"], [data-testid="attach-file"]').first
@@ -918,96 +972,97 @@ class WhatsAppBot:
         return False
 
     async def enviar_midia(self, numero: str, caminho: str, legenda: str = "", force_document: bool = False):
-        try:
-            chat_aberto = False
-            nomes = list(dict.fromkeys(n for n, t in self.mapa_contatos.items() if t == numero))
-            # Fast path: check if current chat is already the target
-            for nome in nomes:
-                if not nome:
-                    continue
-                if await self._chat_ja_aberto(nome):
-                    chat_aberto = True
-                    break
-            if not chat_aberto:
+        async with self.sidebar_lock:
+            try:
+                chat_aberto = False
+                nomes = list(dict.fromkeys(n for n, t in self.mapa_contatos.items() if t == numero))
+                # Fast path: check if current chat is already the target
                 for nome in nomes:
                     if not nome:
                         continue
-                    if await self._abrir_chat_sidebar(nome, numero):
+                    if await self._chat_ja_aberto(nome):
                         chat_aberto = True
                         break
                 if not chat_aberto:
-                    if not await self._abrir_chat_sidebar(telefone=numero):
-                        print(f"  -> Nao foi possivel abrir chat para midia {numero}", flush=True)
-                        return
-            await asyncio.sleep(0.5)
-
-            tem_input = await self.page.query_selector(self.SELETOR_INPUT)
-            if not tem_input:
-                print(f"  -> Input nao disponivel para midia {numero}", flush=True)
-                return
-
-            is_img = Path(caminho).suffix.lower() in (".jpg", ".jpeg", ".png")
-            is_video = Path(caminho).suffix.lower() in (".mp4", ".mov")
-            ok = False
-
-            if not force_document and (is_img or is_video):
-                ok = await self._enviar_midia_como_foto(caminho)
-                if not ok:
-                    print("  -> Fallback: enviando como documento")
-                    ok = await self._enviar_midia_como_documento(caminho)
-                if not ok:
-                    print("  -> Fallback: input direto")
-                    try:
-                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                        await asyncio.sleep(3)
-                        ok = True
-                    except:
-                        pass
-            else:
-                ok = await self._enviar_midia_como_documento(caminho)
-                if not ok:
-                    print("  -> Fallback: input direto")
-                    try:
-                        await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
-                        await asyncio.sleep(3)
-                        ok = True
-                    except:
-                        pass
-
-            if not ok:
-                print(f"  -> Nao foi possivel anexar: {Path(caminho).name}")
-                return
-
-            if legenda:
-                cap = await self.page.query_selector('[data-testid="caption-input"]')
-                if cap:
-                    try:
-                        await cap.fill("")
-                        await cap.type(legenda, delay=20)
-                    except:
-                        await cap.evaluate("el => el.focus()")
-                        await self.page.keyboard.type(legenda)
+                    for nome in nomes:
+                        if not nome:
+                            continue
+                        if await self._abrir_chat_sidebar(nome, numero):
+                            chat_aberto = True
+                            break
+                    if not chat_aberto:
+                        if not await self._abrir_chat_sidebar(telefone=numero):
+                            print(f"  -> Não foi possível abrir chat para mídia {numero}", flush=True)
+                            return
                 await asyncio.sleep(0.5)
 
-            if is_video:
-                if await self._clicar_enviar(20, usar_enter=False):
-                    print(f"  -> Midia enviada: {Path(caminho).name}")
+                tem_input = await self.page.query_selector(self.SELETOR_INPUT)
+                if not tem_input:
+                    print(f"  -> Input não disponível para mídia {numero}", flush=True)
+                    return
+
+                is_img = Path(caminho).suffix.lower() in (".jpg", ".jpeg", ".png")
+                is_video = Path(caminho).suffix.lower() in (".mp4", ".mov")
+                ok = False
+
+                if not force_document and (is_img or is_video):
+                    ok = await self._enviar_midia_como_foto(caminho)
+                    if not ok:
+                        print("  -> Fallback: enviando como documento")
+                        ok = await self._enviar_midia_como_documento(caminho)
+                    if not ok:
+                        print("  -> Fallback: input direto")
+                        try:
+                            await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                            await asyncio.sleep(3)
+                            ok = True
+                        except:
+                            pass
+                else:
+                    ok = await self._enviar_midia_como_documento(caminho)
+                    if not ok:
+                        print("  -> Fallback: input direto")
+                        try:
+                            await self.page.locator('input[type="file"]').first.set_input_files(str(caminho))
+                            await asyncio.sleep(3)
+                            ok = True
+                        except:
+                            pass
+
+                if not ok:
+                    print(f"  -> Não foi possível anexar: {Path(caminho).name}")
+                    return
+
+                if legenda:
+                    cap = await self.page.query_selector('[data-testid="caption-input"]')
+                    if cap:
+                        try:
+                            await cap.fill("")
+                            await cap.type(legenda, delay=20)
+                        except:
+                            await cap.evaluate("el => el.focus()")
+                            await self.page.keyboard.type(legenda)
+                    await asyncio.sleep(0.5)
+
+                if is_video:
+                    if await self._clicar_enviar(20, usar_enter=False):
+                        print(f"  -> Mídia enviada: {Path(caminho).name}")
+                        nome_midia = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
+                        if nome_midia:
+                            self.ultimo_texto_chat[self._n(nome_midia)] = f"📷 {Path(caminho).name}"
+                        await asyncio.sleep(1)
+                        return
+                elif await self._clicar_enviar(15, usar_enter=True):
+                    print(f"  -> Mídia enviada: {Path(caminho).name}")
                     nome_midia = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
                     if nome_midia:
                         self.ultimo_texto_chat[self._n(nome_midia)] = f"📷 {Path(caminho).name}"
                     await asyncio.sleep(1)
                     return
-            elif await self._clicar_enviar(15, usar_enter=True):
-                print(f"  -> Midia enviada: {Path(caminho).name}")
-                nome_midia = next((n for n, t in self.mapa_contatos.items() if t == numero), None)
-                if nome_midia:
-                    self.ultimo_texto_chat[self._n(nome_midia)] = f"📷 {Path(caminho).name}"
-                await asyncio.sleep(1)
-                return
 
-            print(f"  -> Falha ao enviar midia: {Path(caminho).name}")
-        except Exception as e:
-            print(f"[ERRO MIDIA] {safe(e)}")
+                print(f"  -> Falha ao enviar mídia: {Path(caminho).name}")
+            except Exception as e:
+                print(f"[ERRO MÍDIA] {safe(e)}")
 
     async def _consultar_cep(self, cep: str) -> dict | None:
         url = f"https://viacep.com.br/ws/{cep}/json/"
@@ -1042,16 +1097,16 @@ class WhatsAppBot:
             f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
             f"{'='*30}\n"
             f"Produto: {produto['nome']}\n"
-            f"Dimensoes: {produto['medidas']}  Peso: {produto['peso']}\n"
-            f"Endereco: {cliente_info.get('endereco', 'N/I')} - "
+            f"Dimensões: {produto['medidas']}  Peso: {produto['peso']}\n"
+            f"Endereço: {cliente_info.get('endereco', 'N/I')} - "
             f"{cliente_info.get('cidade', 'N/I')}/{cliente_info.get('estado', 'N/I')} "
             f"CEP: {cliente_info.get('cep', 'N/I')}\n"
             f"{'='*30}\n"
-            f"Favor retornar as informacoes abaixo:\n\n"
-            f"Protocolo de Solicitacao: {request_id}\n"
+            f"Favor retornar as informações abaixo:\n\n"
+            f"Protocolo de Solicitação: {request_id}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
-            f"PRAZO DE ENTREGA: ___________ dias uteis"
+            f"PRAZO DE ENTREGA:    dias úteis"
         )
         await self.enviar_texto(transportadora["numero"], msg)
 
@@ -1062,8 +1117,8 @@ class WhatsAppBot:
             await self.enviar_midia_para_cliente(telefone, folder, produto["nome"], force_document=True)
             salvar_mensagem(conv_id, "agente", "[folder.jpg]", "foto")
         else:
-            await self.enviar_para_cliente(telefone, "Folder nao disponivel para este produto.")
-            salvar_mensagem(conv_id, "agente", "Folder nao disponivel.")
+            await self.enviar_para_cliente(telefone, "Folder não disponível para este produto.")
+            salvar_mensagem(conv_id, "agente", "Folder não disponível.")
 
     async def _enviar_foto(self, conv_id: int, telefone: str, produto: dict):
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
@@ -1072,7 +1127,7 @@ class WhatsAppBot:
             await self.enviar_midia_para_cliente(telefone, fotos[0], produto["nome"])
             salvar_mensagem(conv_id, "agente", f"[foto: {fotos[0].name}]", "foto")
         else:
-            await self.enviar_para_cliente(telefone, "Foto nao disponivel para este produto.")
+            await self.enviar_para_cliente(telefone, "Foto não disponível para este produto.")
 
     async def _enviar_video(self, conv_id: int, telefone: str, produto: dict):
         md = BASE_DIR / "media" / "churrasqueiras" / produto["midia_dir"]
@@ -1081,7 +1136,7 @@ class WhatsAppBot:
             await self.enviar_midia_para_cliente(telefone, videos[0], produto["nome"], force_document=True)
             salvar_mensagem(conv_id, "agente", f"[video: {videos[0].name}]", "video")
         else:
-            await self.enviar_para_cliente(telefone, "Video nao disponivel para este produto.")
+            await self.enviar_para_cliente(telefone, "Vídeo não disponível para este produto.")
 
     def _parse_endereco(self, endereco: str) -> dict:
         info = {"endereco": endereco}
@@ -1182,7 +1237,7 @@ class WhatsAppBot:
             max_len = max(len(str(cell.value or "")) for cell in col) + 2
             ws.column_dimensions[get_column_letter(col[0].column)].width = max_len
         wb.save(caminho)
-        print(f"  -> Solicitacao salva: {nome_arquivo}", flush=True)
+        print(f"  -> Solicitação salva: {nome_arquivo}", flush=True)
 
     async def _ler_msg_anterior_usuario(self):
         raw = await self.avaliar("""
@@ -1201,6 +1256,17 @@ class WhatsAppBot:
         """)
         return raw.strip()
 
+    async def _ler_header_chat(self) -> str:
+        raw = await self.avaliar("""
+            () => {
+                const h = document.querySelector('#main header');
+                if (!h) return '';
+                const el = h.querySelector('[title]');
+                return el ? (el.getAttribute('title') || '').trim() : '';
+            }
+        """)
+        return raw.strip()
+
     TRANSPORTADORA_FOB = "555199769477"
 
     def _telefones_transportadoras(self) -> dict[str, str]:
@@ -1208,7 +1274,7 @@ class WhatsAppBot:
         trans["FOB"] = self.TRANSPORTADORA_FOB
         return trans
 
-    async def _executar_frete(self, conv_id: int, cliente_id: int, telefone: str):
+    async def _executar_frete(self, conv_id: int, cliente_id: int, telefone: str, nome_sidebar: str = ""):
         cliente = cliente_por_telefone(telefone)
         if not cliente:
             await self.enviar_para_cliente(telefone, "Erro ao recuperar seus dados.")
@@ -1216,11 +1282,11 @@ class WhatsAppBot:
         conversa = get_conversa_ativa(telefone)
         produto_id = (conversa or {}).get("produto_interesse_id")
         if not produto_id:
-            await self.enviar_para_cliente(telefone, "Produto nao identificado. Escolha um produto primeiro.")
+            await self.enviar_para_cliente(telefone, "Produto não identificado. Escolha um produto primeiro.")
             return
         produto = produto_por_id(produto_id)
         if not produto:
-            await self.enviar_para_cliente(telefone, "Produto nao encontrado.")
+            await self.enviar_para_cliente(telefone, "Produto não encontrado.")
             return
 
         ci = {
@@ -1247,6 +1313,7 @@ class WhatsAppBot:
         }
         self.fretes_pendentes[request_id] = {
             "telefone": telefone,
+            "nome_sidebar": nome_sidebar,
             "conv_id": conv_id,
             "produto": produto,
             "transportadoras": transportadoras_reg,
@@ -1271,13 +1338,13 @@ class WhatsAppBot:
             f"Produto: {produto['nome']}\n"
             f"NF: R$ {produto['preco']:.2f}\n"
             f"Medidas: {produto['medidas']}  Peso: {produto['peso']}\n"
-            f"Endereco: {endereco}\n"
+            f"Endereço: {endereco}\n"
             f"{'='*30}\n"
-            f"Favor retornar as informacoes abaixo:\n\n"
-            f"Protocolo de Solicitacao: {request_id}\n"
+            f"Favor retornar as informações abaixo:\n\n"
+            f"Protocolo de Solicitação: {request_id}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
-            f"PRAZO DE ENTREGA: ___________ dias uteis"
+            f"PRAZO DE ENTREGA:    dias úteis"
         )
         # Tenta enviar via sidebar primeiro (sem page.goto)
         ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
@@ -1286,8 +1353,8 @@ class WhatsAppBot:
             self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
             self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
             return
-        # Fallback: page.goto (se FOB nao estiver na sidebar)
-        print(f"  [frete] FOB nao encontrado na sidebar, navegando direto...", flush=True)
+        # Fallback: page.goto (se FOB não estiver na sidebar)
+        print(f"  [frete] FOB não encontrado na sidebar, navegando direto...", flush=True)
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
         try:
             await self.page.goto(url_fob, timeout=20000)
@@ -1304,11 +1371,27 @@ class WhatsAppBot:
                 self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
                 self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
             else:
-                print(f"  [frete] Input nao encontrado apos navegacao FOB", flush=True)
+                print(f"  [frete] Input não encontrado após navegação FOB", flush=True)
         except Exception as e:
             print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
 
-    async def _solicitar_frete_fob(self, conv_id: int, telefone: str):
+    async def _finalizar_coleta_frete(self, conv_id: int, cliente_id: int, telefone: str, nome_sidebar: str = ""):
+        cliente_completo = cliente_por_telefone(telefone)
+        nome_cliente = cliente_completo.get("nome", "") if cliente_completo else ""
+        endereco = cliente_completo.get("endereco", "") if cliente_completo else ""
+        cidade = cliente_completo.get("cidade", "") if cliente_completo else ""
+        estado = cliente_completo.get("estado", "") if cliente_completo else ""
+        cep = cliente_completo.get("cep", "") if cliente_completo else ""
+        print(f"  [frete] endereço completo -> enviando confirmação + xlsx", flush=True)
+        self._salvar_solicitacao_frete(telefone, nome_cliente,
+            cliente_completo.get("cpf_cnpj", "") if cliente_completo else "",
+            endereco, cidade, estado, cep)
+        await self.enviar_para_cliente(telefone,
+            f"Obrigado, {nome_cliente}! Sua solicitação de frete foi recebida com sucesso.\n"
+            f"Estou consultando a transportadora, aguarde um momento...")
+        await self._solicitar_frete_fob(conv_id, telefone, nome_sidebar)
+
+    async def _solicitar_frete_fob(self, conv_id: int, telefone: str, nome_sidebar: str = ""):
         cliente = cliente_por_telefone(telefone)
         if not cliente:
             await self.enviar_para_cliente(telefone, "Erro ao recuperar seus dados.")
@@ -1316,11 +1399,11 @@ class WhatsAppBot:
         conversa = get_conversa_ativa(telefone)
         produto_id = (conversa or {}).get("produto_interesse_id")
         if not produto_id:
-            await self.enviar_para_cliente(telefone, "Produto nao identificado.")
+            await self.enviar_para_cliente(telefone, "Produto não identificado.")
             return
         produto = produto_por_id(produto_id)
         if not produto:
-            await self.enviar_para_cliente(telefone, "Produto nao encontrado.")
+            await self.enviar_para_cliente(telefone, "Produto não encontrado.")
             return
 
         ci = {
@@ -1335,6 +1418,7 @@ class WhatsAppBot:
         cot_id = criar_cotacao(conv_id, "FOB")
         self.fretes_pendentes[request_id] = {
             "telefone": telefone,
+            "nome_sidebar": nome_sidebar,
             "conv_id": conv_id,
             "produto": produto,
             "transportadoras": {
@@ -1360,20 +1444,28 @@ class WhatsAppBot:
                 if reg["respondido"]:
                     continue
                 tel = reg["telefone"]
-                # Abre o chat da transportadora via sidebar (sem navegacao)
-                ok = await self._abrir_chat_sidebar(telefone=tel)
-                if not ok:
+                # Abre o chat da transportadora via sidebar (com lock)
+                async with self.sidebar_lock:
+                    ok = await self._abrir_chat_sidebar(telefone=tel)
+                    if not ok:
+                        continue
+                    await asyncio.sleep(0.5)
+                    header_atual = await self._ler_header_chat()
+                    if header_atual:
+                        header_digits = re.sub(r"\D", "", header_atual)
+                        if tel not in header_digits and header_digits not in tel:
+                            print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
+                            continue
+                    resp = await self._ler_msg_anterior_usuario()
+                # Primeira vez: salva o texto ATUAL como baseline (antes da resposta)
+                if not reg.get("_inicializado"):
+                    reg["texto_antes"] = resp or ""
+                    reg["_inicializado"] = True
+                    print(f"  [frete] {trans_nome} #{req_id}: texto_antes salvo ('{safe(resp or '')[:30]}'), aguardando resposta nova", flush=True)
                     continue
-                await asyncio.sleep(0.5)
-                resp = await self._ler_msg_anterior_usuario()
                 if not resp:
                     continue
-                # Primeira vez: salva texto_antes e aguarda NOVA mensagem
-                if not reg.get("texto_antes"):
-                    reg["texto_antes"] = resp
-                    print(f"  [frete] {trans_nome} #{req_id}: texto_antes salvo (msg atual), aguardando resposta nova", flush=True)
-                    continue
-                # Se o texto nao mudou, ainda sem resposta nova
+                # Se o texto não mudou, ainda sem resposta nova
                 if resp == reg["texto_antes"]:
                     continue
                 # Dedup entre ciclos
@@ -1381,6 +1473,10 @@ class WhatsAppBot:
                 if dedup_key in self._respostas_frete_vistas:
                     continue
                 self._respostas_frete_vistas.add(dedup_key)
+                # Cross-check: verifica se o Protocolo de Solicitação na resposta corresponde a este req_id
+                if req_id not in resp:
+                    print(f"  [frete] Resposta #{req_id} ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
+                    continue
                 print(f"  [frete] Resposta CRUDA {trans_nome} #{req_id}: '{safe(resp)}'", flush=True)
                 try:
                     valor = self.extrair_valor_frete(resp)
@@ -1403,9 +1499,31 @@ class WhatsAppBot:
                     if valor > 0:
                         msg_cliente += f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n"
                     msg_cliente += f"\nDeseja confirmar o pedido?"
-                    ok = await self.enviar_para_cliente(req["telefone"], msg_cliente)
+                    tel_cliente = req["telefone"]
+                    nome_sidebar_cliente = req.get("nome_sidebar", "")
+                    ok = await self.enviar_para_cliente(tel_cliente, msg_cliente, nome_sidebar_cliente)
                     if not ok:
-                        print(f"  [frete] Falha ao enviar resposta ao cliente {req['telefone']}", flush=True)
+                        print(f"  [frete] sidebar falhou para {tel_cliente}, tentando page.goto...", flush=True)
+                        try:
+                            url_cliente = f"https://web.whatsapp.com/send/?phone={tel_cliente}"
+                            await self.page.goto(url_cliente, timeout=20000)
+                            await asyncio.sleep(2)
+                            caixa = await self._aguardar_input(10)
+                            if caixa:
+                                try:
+                                    await caixa.fill(msg_cliente)
+                                except Exception:
+                                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                                    await self.page.keyboard.type(msg_cliente, delay=20)
+                                await self._clicar_enviar(usar_enter=True)
+                                print(f"  [frete] Resposta enviada via goto para {tel_cliente}", flush=True)
+                                ok = True
+                            else:
+                                print(f"  [frete] Input não encontrado para {tel_cliente}", flush=True)
+                        except Exception as e:
+                            print(f"  [frete] Erro page.goto para {tel_cliente}: {safe(str(e)[:60])}", flush=True)
+                    if not ok:
+                        print(f"  [frete] Falha ao enviar resposta ao cliente {tel_cliente}", flush=True)
                     atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
                     print(f"  [frete] Resposta {trans_nome} encaminhada ao cliente", flush=True)
                 except Exception as e:
@@ -1425,7 +1543,7 @@ class WhatsAppBot:
                     telefone = "55" + re.sub(r'\D', '', remetente)
 
             if len(telefone) < 12:
-                print(f"  -> Telefone invalido p/ {safe(remetente)}: {telefone}", flush=True)
+                print(f"  -> Telefone inválido p/ {safe(remetente)}: {telefone}", flush=True)
                 return
 
             if telefone in self.processando:
@@ -1455,18 +1573,18 @@ class WhatsAppBot:
                 ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                 self.processando.pop(telefone, None)
                 if ok:
-                    print(f"  -> Apresentacao iniciada para {safe(remetente)}", flush=True)
+                    print(f"  -> Apresentação iniciada para {safe(remetente)}", flush=True)
                 else:
                     print(f"  -> Falha ao enviar menu para {safe(remetente)}", flush=True)
                 return
 
-            # Msg sem texto detectavel: reinicia apresentacao
+            # Msg sem texto detectável: reinicia apresentação
             if not msg_texto:
                 print(f"  -> Msg sem texto, reiniciando menu para {safe(remetente)}", flush=True)
                 ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                 self.processando.pop(telefone, None)
                 if ok:
-                    print(f"  -> Apresentacao reiniciada para {safe(remetente)}", flush=True)
+                    print(f"  -> Apresentação reiniciada para {safe(remetente)}", flush=True)
                 else:
                     print(f"  -> Falha ao reiniciar menu para {safe(remetente)}", flush=True)
                 return
@@ -1497,8 +1615,8 @@ class WhatsAppBot:
                 digitos = re.sub(r"\D", "", cpf_cnpj_raw)
                 if not (11 <= len(digitos) <= 14):
                     await self.enviar_para_cliente(telefone,
-                        "CPF ou CNPJ invalido. Digite apenas numeros (11 digitos para CPF, 14 para CNPJ):")
-                    salvar_mensagem(conv_id, "agente", "CPF ou CNPJ invalido.")
+                        "CPF ou CNPJ inválido. Digite apenas números (11 dígitos para CPF, 14 para CNPJ):")
+                    salvar_mensagem(conv_id, "agente", "CPF ou CNPJ inválido.")
                     return
                 cpf_cnpj = digitos
                 atualizar_cliente(cliente_id, cpf_cnpj=cpf_cnpj)
@@ -1517,12 +1635,12 @@ class WhatsAppBot:
                 digitos_cep = re.sub(r"\D", "", cep_raw)
                 if len(digitos_cep) != 8:
                     await self.enviar_para_cliente(telefone,
-                        "CEP invalido. Digite 8 digitos:")
+                        "CEP inválido. Digite 8 dígitos:")
                     return
                 dados = await self._consultar_cep(digitos_cep)
                 if not dados:
                     await self.enviar_para_cliente(telefone,
-                        "CEP nao encontrado. Digite um CEP valido:")
+                        "CEP não encontrado. Digite um CEP válido:")
                     return
                 self._cache_cep[telefone] = dados
                 atualizar_etapa_conversa(conv_id, "frete_numero")
@@ -1534,14 +1652,14 @@ class WhatsAppBot:
                     msg = f"{logr}"
                     if bairro:
                         msg += f", {bairro}"
-                    msg += f", {localidade}/{uf}\n\nQual o numero da casa?"
+                    msg += f", {localidade}/{uf}\n\nQual o número do local?"
                 else:
                     msg = f"{localidade}/{uf}"
                     if bairro:
                         msg = f"Bairro {bairro}, " + msg
-                    msg += "\n\nQual seu endereco completo (rua e numero)?"
+                    msg += "\n\nQual seu endereço completo (rua e número)?"
                 await self.enviar_para_cliente(telefone, msg)
-                salvar_mensagem(conv_id, "agente", "Informe o numero:")
+                salvar_mensagem(conv_id, "agente", "Informe o número:")
                 return
 
             if etapa == "frete_numero":
@@ -1560,7 +1678,7 @@ class WhatsAppBot:
                     # ViaCEP tem rua — pede so o numero
                     if not numero_raw.isdigit():
                         self._cache_cep[telefone] = dados_cep
-                        await self.enviar_para_cliente(telefone, "Digite apenas o numero da casa:")
+                        await self.enviar_para_cliente(telefone, "Digite apenas o número do local:")
                         return
                     numero = numero_raw
                     bairro = dados_cep.get("bairro", "")
@@ -1574,23 +1692,45 @@ class WhatsAppBot:
                 estado = dados_cep.get("uf", "")
                 cep = dados_cep.get("cep", "").replace("-", "")
                 atualizar_cliente(cliente_id, endereco=endereco, cidade=cidade, estado=estado, cep=cep)
-                atualizar_etapa_conversa(conv_id, "frete_aguardando")
-                cliente_completo = cliente_por_telefone(telefone)
-                nome_cliente = cliente_completo.get("nome", "") if cliente_completo else ""
-                print(f"  [frete] endereco salvo -> enviando confirmacao + xlsx", flush=True)
-                self._salvar_solicitacao_frete(
-                    telefone,
-                    nome_cliente,
-                    cliente_completo.get("cpf_cnpj", "") if cliente_completo else "",
-                    endereco,
-                    cidade,
-                    estado,
-                    cep,
-                )
+                self._cache_endereco[telefone] = {"endereco": endereco, "cidade": cidade, "estado": estado, "cep": cep}
+                atualizar_etapa_conversa(conv_id, "frete_complemento")
+                print(f"  [frete] número salvo -> perguntando complemento", flush=True)
                 await self.enviar_para_cliente(telefone,
-                    f"Obrigado, {nome_cliente}! Sua solicitacao de frete foi recebida com sucesso.\n"
-                    f"Estou consultando a transportadora, aguarde um momento...")
-                await self._solicitar_frete_fob(conv_id, telefone)
+                    "Deseja inserir algum complemento?\n[h] SIM - Sim\n[i] NÃO - Não")
+                salvar_mensagem(conv_id, "agente", "Deseja complemento?")
+                return
+
+            # --- FRETE: perguntar se quer complemento ---
+            if etapa == "frete_complemento":
+                opt = self._n(msg_texto.strip().lower())
+                if opt in ("h", "sim", "s"):
+                    atualizar_etapa_conversa(conv_id, "frete_complemento_texto")
+                    await self.enviar_para_cliente(telefone,
+                        "Qual o complemento? (ex: apto 42, bloco B)")
+                    salvar_mensagem(conv_id, "agente", "Informe o complemento:")
+                    self.processando.pop(telefone, None)
+                    return
+                # Qualquer outra resposta = sem complemento
+                dados_end = self._cache_endereco.pop(telefone, None)
+                if dados_end:
+                    atualizar_cliente(cliente_id, endereco=dados_end["endereco"],
+                                     cidade=dados_end["cidade"], estado=dados_end["estado"], cep=dados_end["cep"])
+                atualizar_etapa_conversa(conv_id, "frete_aguardando")
+                self.processando.pop(telefone, None)
+                await self._finalizar_coleta_frete(conv_id, cliente_id, telefone, nome_sidebar)
+                return
+
+            # --- FRETE: capturar texto do complemento ---
+            if etapa == "frete_complemento_texto":
+                complemento = msg_texto.strip()
+                dados_end = self._cache_endereco.pop(telefone, None)
+                if dados_end:
+                    endereco_completo = f"{dados_end['endereco']} - {complemento}"
+                    atualizar_cliente(cliente_id, endereco=endereco_completo,
+                                     cidade=dados_end["cidade"], estado=dados_end["estado"], cep=dados_end["cep"])
+                atualizar_etapa_conversa(conv_id, "frete_aguardando")
+                self.processando.pop(telefone, None)
+                await self._finalizar_coleta_frete(conv_id, cliente_id, telefone, nome_sidebar)
                 return
 
             # --- FRETE: aguardando resposta da transportadora ---
@@ -1606,7 +1746,7 @@ class WhatsAppBot:
                     etapa = "menu_principal"
                 else:
                     await self.enviar_para_cliente(telefone,
-                        "Ainda estou aguardando a resposta da transportadora. Assim que receber, aviso voce!")
+                        "Ainda estou aguardando a resposta da transportadora. Assim que receber, aviso você!")
                     self.processando.pop(telefone, None)
                     return
 
@@ -1627,7 +1767,7 @@ class WhatsAppBot:
                             f"{produto['nome']} - R$ {produto['preco']:.2f}\nID: {venda_id}")
                         print(f"VENDA: {safe(cliente_dados.get('nome',''))} - {safe(produto['nome'])}")
                     else:
-                        await self.enviar_para_cliente(telefone, "Erro ao processar confirmacao.")
+                        await self.enviar_para_cliente(telefone, "Erro ao processar confirmação.")
                 else:
                     atualizar_etapa_conversa(conv_id, "menu_principal")
                     await self.enviar_para_cliente(telefone, "Tudo bem! Se precisar de algo, estou aqui.")
@@ -1733,7 +1873,7 @@ class WhatsAppBot:
                         self.continuar_submenu[telefone] = {"conv_id": conv_id, "produto_id": produto_id, "nome_sidebar": nome_sidebar}
                         atualizar_etapa_conversa(conv_id, "submenu_continuar")
                         await self.enviar_para_cliente(telefone,
-                            "Deseja mais alguma opção?\n[f] SIM - Continuar neste produto\n[g] NAO - Voltar ao Menu Principal",
+                            "Deseja mais alguma opção?\n[f] SIM - Continuar neste produto\n[g] NÃO - Voltar ao Menu Principal",
                             nome_sidebar)
                         return
 
@@ -1785,7 +1925,7 @@ class WhatsAppBot:
                         resposta = "Desculpe, atingi o limite diário de atendimentos. Tente novamente amanhã."
                         resposta_limpa = resposta
                         comando = None
-                        print(f"  [GEMINI] Limite diario atingido ({self.GEMINI_MAX_DIARIO})", flush=True)
+                        print(f"  [GEMINI] Limite diário atingido ({self.GEMINI_MAX_DIARIO})", flush=True)
                     else:
                         # Reduz histórico para 10 mensagens (vs 30 antes)
                         historico = get_historico_conversa(conv_id, limite=10)
@@ -1810,7 +1950,7 @@ class WhatsAppBot:
                 await self.enviar_para_cliente(telefone, resposta_limpa, nome_sidebar)
                 salvar_mensagem(conv_id, "agente", resposta_limpa)
             if comando:
-                await self.executar_comando(comando, conv_id, cliente_id, telefone, remetente)
+                await self.executar_comando(comando, conv_id, cliente_id, telefone, remetente, nome_sidebar)
 
         except Exception as e:
             print(f"[ERRO processar] {safe(e)}")
@@ -1819,7 +1959,7 @@ class WhatsAppBot:
         finally:
             self.processando.pop(telefone, None)
 
-    async def executar_comando(self, comando: dict, conv_id, cliente_id, telefone, remetente):
+    async def executar_comando(self, comando: dict, conv_id, cliente_id, telefone, remetente, nome_sidebar: str = ""):
         acao = comando["acao"]
         if acao == "enviar_midia":
             produto = next((p for p in PRODUTOS if p["id"] == comando["produto_id"]), None)
@@ -1833,7 +1973,7 @@ class WhatsAppBot:
                 atualizar_produto_interesse(conv_id, produto["id"])
 
         elif acao == "solicitar_frete":
-            await self._executar_frete(conv_id, cliente_id, telefone)
+            await self._executar_frete(conv_id, cliente_id, telefone, remetente)
 
         elif acao == "venda_confirmada":
             produto = next((p for p in PRODUTOS if p["id"] == comando["produto_id"]), None)
@@ -1851,9 +1991,8 @@ class WhatsAppBot:
 
     def extrair_valor_frete(self, texto: str) -> float:
         padroes = [
-            r"(?:VALOR DO FRETE|FRETE)\s*:?\s*(?:R\$)?\s*(\d+[.,]\d{2,})",
-            r"(?:R\$)?\s*(\d+[.,]\d{2,})",
-            r"(?:valor|frete)\s*:?\s*(?:R\$)?\s*(\d+[.,]\d+)",
+            r"(?:VALOR DO FRETE|FRETE)\s*:?\s*(?:R\$)?\s*(\d+(?:[.,]\d+)?)",
+            r"(?:R\$)\s*(\d+(?:[.,]\d+)?)",
         ]
         for p in padroes:
             m = re.search(p, texto, re.IGNORECASE)
@@ -1886,6 +2025,13 @@ class WhatsAppBot:
         return None
 
     async def parar(self):
+        if self.fila_worker_task:
+            self.fila_worker_task.cancel()
+            try:
+                await self.fila_worker_task
+            except asyncio.CancelledError:
+                pass
+            self.fila_worker_task = None
         if self.context:
             await self.context.close()
         if self.playwright:

@@ -56,7 +56,7 @@ def gerar_folder(produto: dict):
         draw.text((40, y), linha, fill=COR_TEXTO, font=font_texto)
         y += 45
 
-    draw.text((40, y), f"Dimensoes: {produto['medidas']}", fill=COR_TEXTO, font=font_texto)
+    draw.text((40, y), f"Dimensões: {produto['medidas']}", fill=COR_TEXTO, font=font_texto)
     y += 35
     draw.text((40, y), f"Peso: {produto['peso']}", fill=COR_TEXTO, font=font_texto)
     y += 60
@@ -64,7 +64,7 @@ def gerar_folder(produto: dict):
     draw.line([(40, y), (LARGURA - 40, y)], fill=COR_DESTAQUE, width=3)
     y += 25
 
-    msg = "Solicite ja o seu orcamento pelo WhatsApp!"
+    msg = "Solicite já o seu orçamento pelo WhatsApp!"
     bbox = draw.textbbox((0, 0), msg, font=font_rodape)
     tw = bbox[2] - bbox[0]
     draw.text(((LARGURA - tw) // 2, y), msg, fill=COR_DESTAQUE, font=font_rodape)

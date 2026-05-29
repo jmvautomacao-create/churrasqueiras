@@ -4,6 +4,17 @@
 
 `python main.py` → `init_db()` → `WhatsAppBot().iniciar()` (Playwright Chromium, persistent session `data/whatsapp_session/`) → `escutar_mensagens()` (infinite loop).
 
+## Multi-tarefa (Fila de Atendimento)
+
+O bot atende múltiplos clientes simultaneamente usando uma fila assíncrona:
+
+1. **`escutar_mensagens()`** (loop principal) — detecta novas mensagens e as coloca na `fila_mensagens` (`asyncio.Queue`)
+2. **`_worker()`** (task separada) — retira mensagens da fila e chama `processar_mensagem()` uma por vez
+3. **`fila_pendentes: set[str]`** — impede que o mesmo telefone seja enfileirado duas vezes
+4. **Aviso de posição** — se o cliente já está na fila, recebe "Estou atendendo outros clientes no momento. Sua mensagem está na fila (posição ~N)." (throttle 30s)
+
+O worker é criado em `iniciar()` após login confirmado e cancelado em `parar()`.
+
 ## Architecture
 
 | File | Role |
@@ -17,6 +28,17 @@
 ## Bot Owner
 
 `SEU_NUMERO = "555195036289"` in `config.py`. Bot responds to ALL incoming messages (no test number filter).
+
+## Fila de Atendimento
+
+O bot usa uma fila assíncrona (`asyncio.Queue`) para atender múltiplos clientes:
+
+1. `escutar_mensagens()` detecta mensagens novas e as enfileira via `fila_mensagens.put()`
+2. `_worker()` retira da fila e chama `processar_mensagem()` sequencialmente
+3. `sidebar_lock` (`asyncio.Lock`) serializa acesso à sidebar entre worker e loop principal
+4. `fila_pendentes: set[str]` impede enfileiramento duplicado do mesmo telefone
+4. Se o cliente já está na fila, recebe aviso de posição (throttle 30s via `ultimo_aviso_fila`)
+5. Stales em `fila_pendentes` são limpos após 600s em `_limpar_dicts_antigos`
 
 ## Critical Dedup Chain (main loop, `escutar_mensagens`)
 
@@ -32,7 +54,7 @@ After `processar_mensagem`, `ultimo_visto_texto` is set only if `ultimo_envio[te
 
 ### Processing Lock (`processando`)
 
-Uses `telefone` as key (not `nome_key`). Ensures only one thread processes a given phone number at a time. The telefone validation and derivation (from remetente if needed) happens BEFORE the lock check to prevent empty-key locks.
+Usa `telefone` como chave. É um lock secundário dentro de `processar_mensagem()` — funciona em conjunto com `fila_pendentes` para evitar processamento concorrente do mesmo usuário. A validação do telefone acontece ANTES do lock.
 
 ### Name Normalization (`_n()`)
 
@@ -40,12 +62,14 @@ Used for content normalization but NOT as dict key for dedup. Raw `nome_raw` (fr
 
 ### Skip Logging
 
-Each dedup check logs a `[SKIP]` line at heartbeat intervals (`c % 30 == 0`) showing the reason, e.g.:
+Cada verificação de dedup loga um `[SKIP]` a cada heartbeat (`c % 30 == 0`) com o motivo:
 ```
-[210 SKIP] Jean BUSINESS: texto ja processado (45s atras)
+[210 SKIP] Jean BUSINESS: texto já processado (45s atrás)
 [210 SKIP] Jean 1: envio recente (3.2s)
-[210 SKIP] Maria: texto igual ao ultimo envio
+[210 SKIP] Maria: texto igual ao último envio
 ```
+
+Heartbeat também mostra o estado da fila: `fila: 2, pendentes: 2`.
 
 ## Chat Opening (`_abrir_chat_sidebar`)
 
@@ -64,7 +88,7 @@ When the user responds to "Deseja mais alguma opcao? [1] SIM / [2] NAO":
 
 ### Periodic Dict Cleanup (`_limpar_dicts_antigos`)
 
-Every 600 cycles (~8min), entries older than 7200s (2h) are removed from dedup dicts. `processando` stale locks (300s) are also cleaned. Throttled to once per hour.
+A cada 600 ciclos (~8min), entradas mais antigas que 7200s (2h) são removidas dos dicts de dedup. `processando` stale locks (300s), `fila_pendentes` travados (600s), e `ultimo_aviso_fila` (7200s) também são limpos. Throttled a 1x por hora.
 
 ## Gemini Quota (429)
 
@@ -81,13 +105,15 @@ WhatsApp Web sidebar replaces `\n` with spaces and truncates to ~80 chars. All d
 
 | Dict | Key | Value | Purpose |
 |---|---|---|---|
-| `processando` | telefone | bool | Concurrent processing lock |
+| `processando` | telefone | bool | Lock secundário dentro de `processar_mensagem()` |
 | `ultimo_envio` | telefone | timestamp | Last successful send time |
 | `ultimo_envio_texto` | telefone | full text | Last sent message content |
 | `ultimo_visto_texto` | `"telefone\|texto"` | timestamp | Dedup for same user+text |
 | `ultimo_texto_chat` | telefone | text | Last seen sidebar text |
 | `ultimo_fallback` | telefone | timestamp | Gemini fallback throttle |
 | `apresentacao_menu` | telefone | dict | Menu state (todos_enviados=True means done) |
+| `fila_pendentes` | telefone | str | Telefones na fila ou em processamento |
+| `ultimo_aviso_fila` | telefone | timestamp | Throttle de aviso de posição na fila |
 
 ## Media Structure
 

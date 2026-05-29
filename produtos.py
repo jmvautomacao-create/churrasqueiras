@@ -14,7 +14,7 @@ def produto_por_nome(nome: str) -> dict | None:
 
 
 def catalogar() -> str:
-    linhas = ["CATALOGO DE CHURRASQUEIRAS\n"]
+    linhas = ["CATÁLOGO DE CHURRASQUEIRAS\n"]
     for p in PRODUTOS:
         linhas.append(f"{p['id']}. {p['nome']}")
         linhas.append(f"   {p['descricao']}")
@@ -25,21 +25,21 @@ def catalogar() -> str:
 def detalhar(produto_id: int) -> str:
     p = produto_por_id(produto_id)
     if not p:
-        return "Produto nao encontrado."
+        return "Produto não encontrado."
     return (
         f"{p['nome']}\n\n"
         f"{p['descricao']}\n\n"
         f"Preço: R$ {p['preco']:.2f}\n"
-        f"Dimensoes: {p['medidas']}\n"
+        f"Dimensões: {p['medidas']}\n"
         f"Peso: {p['peso']}\n"
     )
 
 
 def menu_interativo() -> str:
     linhas = [
-        "Ola! Bem-vindo a JMV Churrasqueiras!",
+        "Olá! Bem-vindo a JMV Churrasqueiras!",
         "",
-        "Escolha um modelo digitando o NUMERO correspondente:",
+        "Escolha um modelo digitando o NÚMERO correspondente:",
         "",
     ]
     for p in PRODUTOS:
@@ -56,7 +56,7 @@ def submenu_produto(produto: dict) -> str:
         f"  [a] Folder - Ver folder do produto\n"
         f"  [b] Valor - Consultar preço\n"
         f"  [c] Foto - Enviar foto\n"
-        f"  [d] Video - Enviar video\n"
+        f"  [d] Vídeo - Enviar vídeo\n"
         f"  [e] Frete - Solicitar cotação de frete\n\n"
         f"Digite a letra da opção desejada."
     )
@@ -66,6 +66,6 @@ def valor_produto(produto: dict) -> str:
     return (
         f"{produto['nome']}\n"
         f"Preço: R$ {produto['preco']:.2f}\n\n"
-        f"Dimensoes: {produto['medidas']}\n"
+        f"Dimensões: {produto['medidas']}\n"
         f"Peso: {produto['peso']}"
     )
