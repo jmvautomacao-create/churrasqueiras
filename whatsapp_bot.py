@@ -453,6 +453,7 @@ class WhatsAppBot:
             try:
                 if self.fretes_pendentes:
                     await self._processar_fretes_pendentes()
+                await self._verificar_pagamentos_pendentes()
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
                 break
@@ -461,6 +462,35 @@ class WhatsAppBot:
                 import traceback
                 traceback.print_exc()
                 await asyncio.sleep(5)
+
+    async def _verificar_pagamentos_pendentes(self):
+        try:
+            from database import get_connection
+            from stripe_integration import verificar_pagamento
+            conn = get_connection()
+            rows = conn.execute(
+                "SELECT id, conversa_id, cliente_id, stripe_session_id FROM vendas WHERE payment_status='pendente' AND stripe_session_id IS NOT NULL"
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                venda = dict(row)
+                sess_id = venda["stripe_session_id"]
+                if not verificar_pagamento(sess_id):
+                    continue
+                conn2 = get_connection()
+                conn2.execute("UPDATE vendas SET payment_status='pago', status='pago' WHERE id=?", (venda["id"],))
+                conn2.execute("UPDATE conversas SET etapa='fechada', status='fechada' WHERE id=?", (venda["conversa_id"],))
+                conn2.commit()
+                cli = conn2.execute("SELECT telefone, nome FROM clientes WHERE id=?", (venda["cliente_id"],)).fetchone()
+                conn2.close()
+                if cli:
+                    await self.enviar_para_cliente(cli["telefone"],
+                        f"✅ Pagamento confirmado! Seu pedido será processado em breve. Obrigado, {cli['nome']}!")
+                    await self.enviar_para_cliente(SEU_NUMERO,
+                        f"✅ PAGAMENTO CONFIRMADO (auto) - Venda #{venda['id']} - {cli['nome']}")
+                    print(f"[PAGAMENTO AUTO] Venda {venda['id']} confirmada via Stripe", flush=True)
+        except Exception as e:
+            print(f"[VERIFICAR PAGAMENTOS] {safe(e)}", flush=True)
 
     async def _worker(self):
         while True:
