@@ -1933,8 +1933,8 @@ class WhatsAppBot:
                         else:
                             resposta = "Desculpe, estou temporariamente offline. Tente novamente mais tarde."
 
-                        comando = extrair_comando(resposta)
-                        resposta_limpa = limpar_resposta(resposta)
+                    comando = extrair_comando(resposta)
+                    resposta_limpa = limpar_resposta(resposta)
 
             if resposta_limpa:
                 await self.enviar_para_cliente(telefone, resposta_limpa, nome_sidebar)

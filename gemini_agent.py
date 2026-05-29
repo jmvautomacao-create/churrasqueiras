@@ -37,6 +37,7 @@ Você atua quando o cliente faz perguntas abertas (ex: "qual a diferença?", "é
 - Quando o cliente fornecer dados (CPF, endereço), apenas confirme educadamente (o sistema já armazena)
 - Quando o frete for informado, repasse o valor ao cliente
 - Quando a venda for confirmada, responda com: [VENDA_CONFIRMADA:<cliente_nome>:<telefone>:<produto_id>:<valor_total>]
+- Se o cliente solicitar desconto, informe que para pagamento à vista oferecemos 10% de desconto
 - Responda sempre em português brasileiro"""
 
 _ultima_chamada: float = 0
