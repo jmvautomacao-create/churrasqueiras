@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 import re
 import unicodedata
@@ -64,7 +65,7 @@ class WhatsAppBot:
         self.fila_mensagens: asyncio.Queue | None = None
         self.fila_pendentes: set[str] = set()
         self.fila_worker_task: asyncio.Task | None = None
-        self.ultimo_aviso_fila: dict[str, float] = {}
+        self.frete_monitor_task: asyncio.Task | None = None
         self.sidebar_lock = asyncio.Lock()
 
     async def iniciar(self):
@@ -107,6 +108,7 @@ class WhatsAppBot:
                     self.logado = True
                     self.fila_mensagens = asyncio.Queue()
                     self.fila_worker_task = asyncio.create_task(self._worker())
+                    self.frete_monitor_task = asyncio.create_task(self._monitorar_fretes())
                     await asyncio.sleep(2)
                     return True
 
@@ -116,6 +118,7 @@ class WhatsAppBot:
                     self.logado = True
                     self.fila_mensagens = asyncio.Queue()
                     self.fila_worker_task = asyncio.create_task(self._worker())
+                    self.frete_monitor_task = asyncio.create_task(self._monitorar_fretes())
                     await asyncio.sleep(2)
                     return True
             except Exception as e:
@@ -365,9 +368,6 @@ class WhatsAppBot:
         for k in list(self.fila_pendentes):
             if agora - self.ultimo_processamento.get(k, 0) > 600:
                 self.fila_pendentes.discard(k)
-        for k in list(self.ultimo_aviso_fila):
-            if agora - self.ultimo_aviso_fila[k] > 7200:
-                del self.ultimo_aviso_fila[k]
         # Limpa dedup de respostas de frete (retem apenas ultima 1h)
         self._respostas_frete_vistas.clear()
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
@@ -449,6 +449,20 @@ class WhatsAppBot:
         """
         return await self.avaliar(codigo, mapa_str)
 
+    async def _monitorar_fretes(self):
+        while True:
+            try:
+                if self.fretes_pendentes:
+                    await self._processar_fretes_pendentes()
+                await asyncio.sleep(3)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[FRETE MONITOR] {safe(e)}", flush=True)
+                import traceback
+                traceback.print_exc()
+                await asyncio.sleep(5)
+
     async def _worker(self):
         while True:
             try:
@@ -457,17 +471,15 @@ class WhatsAppBot:
                 try:
                     print(f"\n>>> [WORKER] Processando {safe(nome_raw)}: {safe(texto)}", flush=True)
                     if texto:
-                        antes = self.ultimo_envio.get(telefone, 0)
+                        self.ultimo_visto_texto[f"{telefone}|{self._n(texto)}"] = time.time()
                     await self.processar_mensagem(nome_key, texto, telefone, nome_raw)
-                    if texto:
-                        depois = self.ultimo_envio.get(telefone, 0)
-                        if depois > antes:
-                            self.ultimo_visto_texto[f"{telefone}|{self._n(texto)}"] = time.time()
                 except Exception as e:
                     print(f"[WORKER ERRO] {safe(e)}", flush=True)
                     import traceback
                     traceback.print_exc()
                 finally:
+                    if texto:
+                        self.ultimo_visto_texto[f"{telefone}|{self._n(texto)}"] = time.time()
                     self.fila_pendentes.discard(telefone)
                     self.fila_mensagens.task_done()
             except asyncio.CancelledError:
@@ -587,17 +599,7 @@ class WhatsAppBot:
                     if nao_lida:
                         self.ultimo_processamento[telefone] = agora
                         print(f"\n>>> NOVA MENSAGEM: {safe(nome_raw)}: {safe(texto)}", flush=True)
-                        if telefone in self.fila_pendentes:
-                            agora_aviso = time.time()
-                            ult_aviso = self.ultimo_aviso_fila.get(telefone, 0)
-                            if agora_aviso - ult_aviso > 30:
-                                pos = self.fila_mensagens.qsize() + 1
-                                await self.enviar_texto(telefone,
-                                    f"Estou atendendo outros clientes no momento. "
-                                    f"Sua mensagem está na fila (posição ~{pos}). "
-                                    f"Assim que possível, atenderei você!")
-                                self.ultimo_aviso_fila[telefone] = agora_aviso
-                        else:
+                        if telefone not in self.fila_pendentes:
                             self.fila_pendentes.add(telefone)
                             await self.fila_mensagens.put((nome_key, texto, telefone, nome_raw))
                         continue
@@ -1238,6 +1240,7 @@ class WhatsAppBot:
             ws.column_dimensions[get_column_letter(col[0].column)].width = max_len
         wb.save(caminho)
         print(f"  -> Solicitação salva: {nome_arquivo}", flush=True)
+        return caminho
 
     async def _ler_msg_anterior_usuario(self):
         raw = await self.avaliar("""
@@ -1383,15 +1386,15 @@ class WhatsAppBot:
         estado = cliente_completo.get("estado", "") if cliente_completo else ""
         cep = cliente_completo.get("cep", "") if cliente_completo else ""
         print(f"  [frete] endereço completo -> enviando confirmação + xlsx", flush=True)
-        self._salvar_solicitacao_frete(telefone, nome_cliente,
+        caminho_xlsx = self._salvar_solicitacao_frete(telefone, nome_cliente,
             cliente_completo.get("cpf_cnpj", "") if cliente_completo else "",
             endereco, cidade, estado, cep)
         await self.enviar_para_cliente(telefone,
             f"Obrigado, {nome_cliente}! Sua solicitação de frete foi recebida com sucesso.\n"
             f"Estou consultando a transportadora, aguarde um momento...")
-        await self._solicitar_frete_fob(conv_id, telefone, nome_sidebar)
+        await self._solicitar_frete_fob(conv_id, telefone, nome_sidebar, caminho_xlsx)
 
-    async def _solicitar_frete_fob(self, conv_id: int, telefone: str, nome_sidebar: str = ""):
+    async def _solicitar_frete_fob(self, conv_id: int, telefone: str, nome_sidebar: str = "", xlsx_path: str = ""):
         cliente = cliente_por_telefone(telefone)
         if not cliente:
             await self.enviar_para_cliente(telefone, "Erro ao recuperar seus dados.")
@@ -1420,6 +1423,7 @@ class WhatsAppBot:
             "telefone": telefone,
             "nome_sidebar": nome_sidebar,
             "conv_id": conv_id,
+            "xlsx_path": xlsx_path,
             "produto": produto,
             "transportadoras": {
                 "FOB": {
@@ -1525,6 +1529,25 @@ class WhatsAppBot:
                     if not ok:
                         print(f"  [frete] Falha ao enviar resposta ao cliente {tel_cliente}", flush=True)
                     atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+                    xlsx_path = req.get("xlsx_path")
+                    if xlsx_path and os.path.exists(xlsx_path):
+                        try:
+                            from openpyxl import load_workbook
+                            wb = load_workbook(xlsx_path)
+                            ws = wb.active
+                            for row in ws.iter_rows(min_row=2, max_col=2):
+                                if row[0].value == "STATUS":
+                                    row[1].value = "Cotado"
+                                    if valor > 0:
+                                        for row2 in ws.iter_rows(min_row=2, max_col=2):
+                                            if row2[0].value == "VALOR DO FRETE FOB":
+                                                row2[1].value = f"R$ {valor:.2f}"
+                                                break
+                                    break
+                            wb.save(xlsx_path)
+                            print(f"  -> Status atualizado para 'Cotado' em {os.path.basename(xlsx_path)}", flush=True)
+                        except Exception as e2:
+                            print(f"  [frete] Erro ao atualizar xlsx: {safe(str(e2)[:60])}", flush=True)
                     print(f"  [frete] Resposta {trans_nome} encaminhada ao cliente", flush=True)
                 except Exception as e:
                     print(f"  [frete] Erro ao processar resposta {trans_nome}: {safe(str(e)[:100])}", flush=True)
@@ -1594,11 +1617,6 @@ class WhatsAppBot:
             # --- FLUXO DE FRETE: coleta de dados ---
             if etapa == "frete_nome":
                 nome = msg_texto.strip()
-                # Fallback: se o chat tiver uma msg anterior do usuario (sidebar perdeu), usa ela
-                msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != nome:
-                    print(f"  [frete] sidebar perdeu '{safe(nome)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    nome = msg_anterior
                 atualizar_cliente(cliente_id, nome=nome)
                 atualizar_etapa_conversa(conv_id, "frete_cpf")
                 print(f"  [frete] nome salvo: {safe(nome)} -> etapa frete_cpf", flush=True)
@@ -1608,10 +1626,6 @@ class WhatsAppBot:
 
             if etapa == "frete_cpf":
                 cpf_cnpj_raw = msg_texto.strip()
-                msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != cpf_cnpj_raw:
-                    print(f"  [frete] sidebar perdeu '{safe(cpf_cnpj_raw)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    cpf_cnpj_raw = msg_anterior
                 digitos = re.sub(r"\D", "", cpf_cnpj_raw)
                 if not (11 <= len(digitos) <= 14):
                     await self.enviar_para_cliente(telefone,
@@ -1628,10 +1642,6 @@ class WhatsAppBot:
 
             if etapa == "frete_cep":
                 cep_raw = msg_texto.strip()
-                msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != cep_raw:
-                    print(f"  [frete] sidebar perdeu '{safe(cep_raw)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    cep_raw = msg_anterior
                 digitos_cep = re.sub(r"\D", "", cep_raw)
                 if len(digitos_cep) != 8:
                     await self.enviar_para_cliente(telefone,
@@ -1669,10 +1679,6 @@ class WhatsAppBot:
                     await self.enviar_para_cliente(telefone, "Erro. Informe seu CEP novamente:")
                     return
                 numero_raw = msg_texto.strip()
-                msg_anterior = await self._ler_msg_anterior_usuario()
-                if msg_anterior and msg_anterior != numero_raw:
-                    print(f"  [frete] sidebar perdeu '{safe(numero_raw)}', usando msg anterior: '{safe(msg_anterior)}'", flush=True)
-                    numero_raw = msg_anterior
                 logradouro = dados_cep.get("logradouro", "")
                 if logradouro:
                     # ViaCEP tem rua — pede so o numero
@@ -2025,6 +2031,13 @@ class WhatsAppBot:
         return None
 
     async def parar(self):
+        if self.frete_monitor_task:
+            self.frete_monitor_task.cancel()
+            try:
+                await self.frete_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self.frete_monitor_task = None
         if self.fila_worker_task:
             self.fila_worker_task.cancel()
             try:
