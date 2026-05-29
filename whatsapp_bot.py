@@ -929,6 +929,8 @@ class WhatsAppBot:
                 return False
             except Exception as e:
                 print(f"[ERRO ENVIO] {safe(e)}", flush=True)
+                import traceback
+                traceback.print_exc()
                 return False
 
     async def _clicar_anexar(self):
@@ -1655,10 +1657,17 @@ class WhatsAppBot:
                 print(f"  -> Telefone inválido p/ {safe(remetente)}: {telefone}", flush=True)
                 return
 
-            # BOT-DEDUP: se o bot enviou msg nos ultimos 10s, ignora (evita loop propria msg)
+            # BOT-DEDUP: se o bot enviou msg nos ultimos 10s e o conteudo parece eco do bot, ignora
             if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 10:
-                print(f"  [BOT-DEDUP] {safe(remetente)}: proprio bot ignorado", flush=True)
-                return
+                ultimo_texto = self.ultimo_envio_texto.get(telefone, "")
+                if ultimo_texto and msg_texto:
+                    msg_norm = re.sub(r'\s+', ' ', msg_texto).strip().lower()
+                    env_norm = re.sub(r'\s+', ' ', ultimo_texto).strip().lower()
+                    if env_norm.startswith(msg_norm) or (len(msg_norm) > 20 and msg_norm in env_norm):
+                        print(f"  [BOT-DEDUP] {safe(remetente)}: proprio bot ignorado", flush=True)
+                        return
+                elif not msg_texto:
+                    return
 
             if telefone in self.processando:
                 return
