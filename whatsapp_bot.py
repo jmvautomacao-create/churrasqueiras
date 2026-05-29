@@ -1690,12 +1690,28 @@ class WhatsAppBot:
 
             etapa = (conversa or {}).get("etapa", "")
 
-            # --- VENDA FINALIZADA: ignora mensagens futuras ---
+            # --- VENDA FINALIZADA: permite reiniciar compra ---
             if etapa == "fechada":
-                await self.enviar_para_cliente(telefone,
-                    "Seu pedido já foi finalizado. Obrigado pela compra!")
-                self.processando.pop(telefone, None)
-                return
+                palavras_nova_compra = ["comprar", "nova", "novamente", "quero", "gostaria de comprar",
+                                         "outra", "novo pedido", "mais uma", "nova compra"]
+                if any(p in msg_texto.lower() for p in palavras_nova_compra):
+                    from database import get_connection
+                    conn = get_connection()
+                    conn.execute("UPDATE conversas SET etapa='menu_principal' WHERE id=?", (conv_id,))
+                    conn.commit()
+                    conn.close()
+                    print(f"  -> Conversa {conv_id} reaberta para nova compra ({safe(remetente)})", flush=True)
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                    self.processando.pop(telefone, None)
+                    if ok:
+                        print(f"  -> Nova apresentação iniciada para {safe(remetente)}", flush=True)
+                    return
+                else:
+                    await self.enviar_para_cliente(telefone,
+                        "Seu pedido já foi finalizado. Obrigado pela compra!\n\n"
+                        "Se quiser fazer uma nova compra, é só dizer 'quero comprar novamente'.")
+                    self.processando.pop(telefone, None)
+                    return
 
             # --- FLUXO DE FRETE: coleta de dados ---
             if etapa == "frete_nome":
