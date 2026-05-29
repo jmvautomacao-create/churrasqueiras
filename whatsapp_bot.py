@@ -1754,6 +1754,14 @@ class WhatsAppBot:
                     self.processando.pop(telefone, None)
                     return
 
+            # --- FRETE: aguardando pagamento do cliente ---
+            if etapa == "frete_aguardando_pagamento":
+                await self.enviar_para_cliente(telefone,
+                    "Seu pedido está aguardando a confirmação do pagamento.\n"
+                    "Assim que o pagamento for confirmado, avisaremos você!")
+                self.processando.pop(telefone, None)
+                return
+
             # --- FRETE: aguardando confirmacao do cliente ---
             if etapa == "frete_confirmar":
                 opt = self._n(msg_texto.strip().lower())
@@ -1773,7 +1781,6 @@ class WhatsAppBot:
                         )
                         stripe_session_id = None
                         if link_pagamento:
-                            import re
                             m = re.search(r"/session/([^/]+)", link_pagamento)
                             if m:
                                 stripe_session_id = m.group(1)
@@ -1782,21 +1789,24 @@ class WhatsAppBot:
                             produto["preco"], valor_frete=valor_frete,
                             payment_url=link_pagamento, stripe_session_id=stripe_session_id,
                         )
-                        atualizar_etapa_conversa(conv_id, "fechada")
+                        atualizar_etapa_conversa(conv_id, "frete_aguardando_pagamento")
                         if link_pagamento:
                             await self.enviar_para_cliente(telefone,
-                                f"Pedido confirmado!\nProduto: {produto['nome']}\n"
+                                f"Perfeito! Para finalizar sua compra, realize o pagamento pelo link abaixo:\n\n"
+                                f"💳 {link_pagamento}\n\n"
+                                f"Produto: {produto['nome']}\n"
                                 f"Total: R$ {total:.2f}\n\n"
-                                f"💳 Link para pagamento (Pix ou Cartão):\n{link_pagamento}")
+                                f"Após a confirmação do pagamento, seu pedido será processado.")
                         else:
                             await self.enviar_para_cliente(telefone,
                                 f"Pedido confirmado!\nProduto: {produto['nome']}\n"
-                                f"Total: R$ {total:.2f}\nObrigado pela compra!")
+                                f"Total: R$ {total:.2f}\nObrigado pela compra!\n\n"
+                                f"Entrarei em contato para finalizar o pagamento.")
                         await self.enviar_para_cliente(SEU_NUMERO,
-                            f"VENDA!\n{cliente_dados.get('nome','')} - Tel: {telefone}\n"
+                            f"💳 PAGAMENTO PENDENTE\n{cliente_dados.get('nome','')} - Tel: {telefone}\n"
                             f"{produto['nome']} - R$ {total:.2f}\n"
                             f"Link: {link_pagamento or 'N/D'}\nID: {venda_id}")
-                        print(f"VENDA: {safe(cliente_dados.get('nome',''))} - {safe(produto['nome'])}")
+                        print(f"VENDA PENDENTE: {safe(cliente_dados.get('nome',''))} - {safe(produto['nome'])} - {safe(link_pagamento or 'N/D')}")
                     else:
                         await self.enviar_para_cliente(telefone, "Erro ao processar confirmação.")
                 else:

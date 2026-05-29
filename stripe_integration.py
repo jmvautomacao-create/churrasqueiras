@@ -14,7 +14,7 @@ def criar_checkout_pix_cartao(
     try:
         session = stripe.checkout.Session.create(
             mode="payment",
-            payment_method_types=["card", "pix"],
+            payment_method_types=["card"],
             line_items=[{
                 "price_data": {
                     "currency": "brl",
