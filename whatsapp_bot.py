@@ -15,7 +15,7 @@ from database import (
     atualizar_etapa_conversa, atualizar_produto_interesse, criar_cotacao,
     atualizar_cotacao, criar_venda, get_historico_conversa, get_conversa_ativa,
     atualizar_cliente, get_ultima_cotacao, confirmar_pagamento, get_venda,
-    get_venda_pendente_conversa,
+    get_venda_pendente_conversa, tem_compra_finalizada,
 )
 from gemini_agent import gerar_resposta, resposta_fallback, extrair_comando, limpar_resposta
 from stripe_integration import criar_checkout_pix_cartao, verificar_pagamento
@@ -66,6 +66,7 @@ class WhatsAppBot:
         self.fila_worker_task: asyncio.Task | None = None
         self.frete_monitor_task: asyncio.Task | None = None
         self.sidebar_lock = asyncio.Lock()
+        self.ultimo_envio_sucesso: dict[str, float] = {}
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -353,9 +354,6 @@ class WhatsAppBot:
         for k in list(self.ultimo_envio_texto):
             if agora - self.ultimo_envio.get(k, 0) > limite:
                 del self.ultimo_envio_texto[k]
-        for k in list(self.ultimo_texto_chat):
-            if agora - self.ultimo_envio.get(k, 0) > limite:
-                del self.ultimo_texto_chat[k]
         for k in list(self.ultimo_fallback):
             if agora - self.ultimo_fallback[k] > limite:
                 del self.ultimo_fallback[k]
@@ -372,6 +370,9 @@ class WhatsAppBot:
         for k in list(self.fila_pendentes):
             if agora - self.ultimo_processamento.get(k, 0) > 600:
                 self.fila_pendentes.discard(k)
+        for k in list(self.ultimo_envio_sucesso):
+            if agora - self.ultimo_envio_sucesso[k] > limite:
+                del self.ultimo_envio_sucesso[k]
         # Limpa dedup de respostas de frete (retem apenas ultima 1h)
         self._respostas_frete_vistas.clear()
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
@@ -489,8 +490,10 @@ class WhatsAppBot:
                 cli = conn2.execute("SELECT telefone, nome FROM clientes WHERE id=?", (venda["cliente_id"],)).fetchone()
                 conn2.close()
                 if cli:
-                    await self.enviar_para_cliente(cli["telefone"],
-                        f"✅ Pagamento confirmado! Seu pedido será processado em breve. Obrigado, {cli['nome']}!")
+                    msg_confirm = f"✅ Pagamento confirmado! Seu pedido será processado em breve. Obrigado, {cli['nome']}!"
+                    await self.enviar_para_cliente(cli["telefone"], msg_confirm)
+                    # Evita que essa mensagem seja detectada como nova mensagem do usuario
+                    self.ultimo_visto_texto[f"{cli['telefone']}|{self._n(msg_confirm)}"] = time.time() + 3600
                     await self.enviar_para_cliente(SEU_NUMERO,
                         f"✅ PAGAMENTO CONFIRMADO (auto) - Venda #{venda['id']} - {cli['nome']}")
                     self._atualizar_xlsx_venda_paga(venda.get("xlsx_path", ""))
@@ -585,7 +588,6 @@ class WhatsAppBot:
 
                     # Dedup: mesma mensagem do usuario ja processada com sucesso
                     if texto:
-                        # Para mensagens numericas (selecao de produto), dedup mais curto (30s)
                         dedup_window = 30 if texto.strip().isdigit() else 600
                         chave = f"{telefone}|{self._n(texto)}"
                         ult_visto = self.ultimo_visto_texto.get(chave, 0)
@@ -593,6 +595,12 @@ class WhatsAppBot:
                             if c % 30 == 0:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto já processado ({agora-ult_visto:.0f}s atrás)")
                             continue
+
+                    # Guarda forte: se bot enviou msg nos ultimos 8s, ignora (evita loop propria msg)
+                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 8:
+                        if c % 30 == 0:
+                            print(f"  [{c} SKIP] {safe(nome_raw)}: envio recente ({agora-self.ultimo_envio.get(telefone,0):.1f}s)")
+                        continue
 
                     # Pula se o texto da sidebar for igual ao que o bot acabou de enviar
                     ultimo_env = self.ultimo_envio_texto.get(telefone, "")
@@ -893,17 +901,31 @@ class WhatsAppBot:
                 if not ok_dig:
                     print(f"  -> Input não disponível para {numero}", flush=True)
                     return False
+                agora = time.time()
+                primeira_linha = texto.split("\n")[0][:80]
+                antigo_envio = self.ultimo_envio.get(numero)
+                antigo_texto = self.ultimo_envio_texto.get(numero)
+                # Popula dicts ANTES de enviar para eliminar race com a sidebar
+                self.ultimo_envio[numero] = agora
+                self.ultimo_envio_texto[numero] = texto
+                self.ultimo_texto_chat[numero] = primeira_linha
                 if await self._clicar_enviar():
                     print(f"  -> Enviado para {numero}", flush=True)
-                    primeira_linha = texto.split("\n")[0][:80]
-                    self.ultimo_texto_chat[numero] = primeira_linha
-                    self.ultimo_envio[numero] = time.time()
-                    self.ultimo_envio_texto[numero] = texto
+                    self.ultimo_envio_sucesso[numero] = time.time()
                     if primeira_linha:
-                        self.ultimo_visto_texto[f"{numero}|{self._n(primeira_linha)}"] = time.time()
+                        self.ultimo_visto_texto[f"{numero}|{self._n(primeira_linha)}"] = agora
                     return True
 
                 print(f"  -> Falha ao enviar para {numero}", flush=True)
+                # Rollback
+                if antigo_envio is not None:
+                    self.ultimo_envio[numero] = antigo_envio
+                else:
+                    del self.ultimo_envio[numero]
+                if antigo_texto is not None:
+                    self.ultimo_envio_texto[numero] = antigo_texto
+                else:
+                    del self.ultimo_envio_texto[numero]
                 return False
             except Exception as e:
                 print(f"[ERRO ENVIO] {safe(e)}", flush=True)
@@ -1407,6 +1429,11 @@ class WhatsAppBot:
             print(f"  -> FOB enviado #{request_id}", flush=True)
             self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
             self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            if request_id in self.fretes_pendentes:
+                for t in self.fretes_pendentes[request_id]["transportadoras"].values():
+                    if t["telefone"] == self.TRANSPORTADORA_FOB:
+                        t["texto_antes"] = msg
+                        t["_inicializado"] = True
             return
         # Fallback: page.goto (se FOB não estiver na sidebar)
         print(f"  [frete] FOB não encontrado na sidebar, navegando direto...", flush=True)
@@ -1421,10 +1448,15 @@ class WhatsAppBot:
                 except Exception:
                     await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
                     await self.page.keyboard.type(msg, delay=20)
-                await self._clicar_enviar(usar_enter=True)
-                print(f"  -> FOB enviado #{request_id} (goto)", flush=True)
                 self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
                 self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+                await self._clicar_enviar(usar_enter=True)
+                print(f"  -> FOB enviado #{request_id} (goto)", flush=True)
+                if request_id in self.fretes_pendentes:
+                    for t in self.fretes_pendentes[request_id]["transportadoras"].values():
+                        if t["telefone"] == self.TRANSPORTADORA_FOB:
+                            t["texto_antes"] = msg
+                            t["_inicializado"] = True
             else:
                 print(f"  [frete] Input não encontrado após navegação FOB", flush=True)
         except Exception as e:
@@ -1520,12 +1552,6 @@ class WhatsAppBot:
                             print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
                             continue
                     resp = await self._ler_msg_anterior_usuario()
-                # Primeira vez: salva o texto ATUAL como baseline (antes da resposta)
-                if not reg.get("_inicializado"):
-                    reg["texto_antes"] = resp or ""
-                    reg["_inicializado"] = True
-                    print(f"  [frete] {trans_nome} #{req_id}: texto_antes salvo ('{safe(resp or '')[:30]}'), aguardando resposta nova", flush=True)
-                    continue
                 if not resp:
                     continue
                 # Se o texto não mudou, ainda sem resposta nova
@@ -1629,6 +1655,11 @@ class WhatsAppBot:
                 print(f"  -> Telefone inválido p/ {safe(remetente)}: {telefone}", flush=True)
                 return
 
+            # BOT-DEDUP: se o bot enviou msg nos ultimos 10s, ignora (evita loop propria msg)
+            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 10:
+                print(f"  [BOT-DEDUP] {safe(remetente)}: proprio bot ignorado", flush=True)
+                return
+
             if telefone in self.processando:
                 return
             self.processando[telefone] = True
@@ -1663,7 +1694,10 @@ class WhatsAppBot:
             cliente_id = criar_cliente(telefone, nome=remetente)
             conversa = get_conversa_ativa(telefone)
             if not conversa:
-                conv_id = criar_conversa(cliente_id)
+                if tem_compra_finalizada(telefone):
+                    conv_id = criar_conversa(cliente_id, etapa_inicial="pos_compra")
+                else:
+                    conv_id = criar_conversa(cliente_id)
             else:
                 conv_id = conversa["conversa_id"]
 
@@ -1674,6 +1708,19 @@ class WhatsAppBot:
             # So inicia apresentacao se ainda nao houver resposta do bot
             tem_resposta = any(m["origem"] == "agente" for m in historico)
             if not tem_resposta:
+                if not conversa:
+                    from database import get_connection
+                    conn2 = get_connection()
+                    row2 = conn2.execute("SELECT etapa FROM conversas WHERE id=?", (conv_id,)).fetchone()
+                    etapa_conv = row2["etapa"] if row2 else ""
+                    conn2.close()
+                    if etapa_conv == "pos_compra":
+                        await self.enviar_para_cliente(telefone,
+                            "Olá! Vi que você já é nosso cliente.\n\n"
+                            "[1] Realizar uma nova compra\n"
+                            "[2] Informações sobre a compra anterior")
+                        salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
+                        return
                 ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                 self.processando.pop(telefone, None)
                 if ok:
@@ -1695,11 +1742,34 @@ class WhatsAppBot:
 
             etapa = (conversa or {}).get("etapa", "")
 
-            # --- VENDA FINALIZADA: permite reiniciar compra ---
+            # --- CLIENTE COM COMPRA ANTERIOR em estágio neutro: pergunta o que quer ---
+            if etapa in ("menu_principal", "saudacao", "") and tem_compra_finalizada(telefone):
+                atualizar_etapa_conversa(conv_id, "pos_compra")
+                await self.enviar_para_cliente(telefone,
+                    "Olá! Vi que você já é nosso cliente.\n\n"
+                    "[1] Realizar uma nova compra\n"
+                    "[2] Informações sobre a compra anterior")
+                salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
+                self.processando.pop(telefone, None)
+                return
+
+            # --- VENDA FINALIZADA: pergunta nova compra ou info ---
             if etapa == "fechada":
-                palavras_nova_compra = ["comprar", "nova", "novamente", "quero", "gostaria de comprar",
-                                         "outra", "novo pedido", "mais uma", "nova compra"]
-                if any(p in msg_texto.lower() for p in palavras_nova_compra):
+                atualizar_etapa_conversa(conv_id, "pos_compra")
+                await self.enviar_para_cliente(telefone,
+                    "Olá! Vi que você já é nosso cliente.\n\n"
+                    "[1] Realizar uma nova compra\n"
+                    "[2] Informações sobre a compra anterior")
+                salvar_mensagem(conv_id, "agente", "Nova compra ou informações?")
+                self.processando.pop(telefone, None)
+                return
+
+            # --- POS-COMPRA: nova compra ou informações ---
+            if etapa == "pos_compra":
+                opt_pos = msg_texto.strip().lower()
+                palavras_nova = ["1", "nova", "comprar", "novamente", "quero", "sim"]
+                palavras_info = ["2", "info", "informações", "informacoes", "anterior", "compra anterior"]
+                if any(p in opt_pos for p in palavras_nova):
                     from database import get_connection
                     conn = get_connection()
                     conn.execute("UPDATE conversas SET etapa='menu_principal' WHERE id=?", (conv_id,))
@@ -1711,14 +1781,27 @@ class WhatsAppBot:
                     if ok:
                         print(f"  -> Nova apresentação iniciada para {safe(remetente)}", flush=True)
                     return
+                elif any(p in opt_pos for p in palavras_info):
+                    await self.enviar_para_cliente(telefone,
+                        "Informaremos quando for entregue à transportadora.")
+                    salvar_mensagem(conv_id, "agente", "Informações da compra anterior")
+                    atualizar_etapa_conversa(conv_id, "fechada")
+                    self.processando.pop(telefone, None)
+                    return
                 else:
                     await self.enviar_para_cliente(telefone,
-                        "Seu pedido já foi finalizado. Obrigado pela compra!\n\n"
-                        "Se quiser fazer uma nova compra, é só dizer 'quero comprar novamente'.")
+                        "Por favor, escolha:\n\n"
+                        "[1] Nova compra\n"
+                        "[2] Informações da compra anterior")
                     self.processando.pop(telefone, None)
                     return
 
             # --- FLUXO DE FRETE: coleta de dados ---
+            if etapa in ("frete_nome", "frete_cpf", "frete_cep", "frete_numero"):
+                cli = cliente_por_telefone(telefone)
+                if cli and all([cli.get("nome"), cli.get("cpf_cnpj"), cli.get("endereco"), cli.get("cidade"), cli.get("estado"), cli.get("cep")]):
+                    await self._finalizar_coleta_frete(conv_id, cli["id"], telefone, nome_sidebar)
+                    return
             if etapa == "frete_nome":
                 nome = msg_texto.strip()
                 atualizar_cliente(cliente_id, nome=nome)
@@ -2056,7 +2139,6 @@ class WhatsAppBot:
 
                     if acao == "frete":
                         atualizar_produto_interesse(conv_id, produto["id"])
-                        from database import cliente_por_telefone
                         cli = cliente_por_telefone(telefone)
                         if cli and all([cli.get("nome"), cli.get("cpf_cnpj"), cli.get("endereco"), cli.get("cidade"), cli.get("estado"), cli.get("cep")]):
                             await self._finalizar_coleta_frete(conv_id, cli["id"], telefone, nome_sidebar)

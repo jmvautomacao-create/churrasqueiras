@@ -114,6 +114,17 @@ def cliente_por_telefone(telefone):
     return dict(cliente) if cliente else None
 
 
+def tem_compra_finalizada(telefone):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM vendas v JOIN clientes c ON c.id=v.cliente_id "
+        "WHERE c.telefone=? AND v.payment_status='pago' LIMIT 1",
+        (telefone,)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
 def criar_cliente(telefone, nome=None):
     conn = get_connection()
     cursor = conn.cursor()
@@ -145,7 +156,7 @@ def atualizar_cliente(cliente_id, **kwargs):
     conn.close()
 
 
-def criar_conversa(cliente_id, produto_id=None):
+def criar_conversa(cliente_id, produto_id=None, etapa_inicial=None):
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -159,8 +170,8 @@ def criar_conversa(cliente_id, produto_id=None):
         return ativa["id"]
 
     cursor.execute(
-        "INSERT INTO conversas (cliente_id, produto_interesse_id) VALUES (?, ?)",
-        (cliente_id, produto_id),
+        "INSERT INTO conversas (cliente_id, produto_interesse_id, etapa) VALUES (?, ?, ?)",
+        (cliente_id, produto_id, etapa_inicial if etapa_inicial else "saudacao"),
     )
     conn.commit()
     conv_id = cursor.lastrowid
