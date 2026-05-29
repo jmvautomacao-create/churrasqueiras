@@ -35,6 +35,10 @@ class WhatsAppBot:
         nome = re.sub(r'\s+', ' ', nome).strip()
         return nome
 
+    @staticmethod
+    def _strip_emoji(texto: str) -> str:
+        return re.sub(r'[^\x00-\x7F\s]', '', texto)
+
     def __init__(self):
         self.page = None
         self.context = None
@@ -605,8 +609,8 @@ class WhatsAppBot:
                     # Pula se o texto da sidebar for igual ao que o bot acabou de enviar
                     ultimo_env = self.ultimo_envio_texto.get(telefone, "")
                     if texto and ultimo_env:
-                        texto_norm = re.sub(r'\s+', ' ', texto).strip()
-                        envio_norm = re.sub(r'\s+', ' ', ultimo_env).strip()
+                        texto_norm = re.sub(r'\s+', ' ', self._strip_emoji(texto)).strip().lower()
+                        envio_norm = re.sub(r'\s+', ' ', self._strip_emoji(ultimo_env)).strip().lower()
                         if envio_norm.startswith(texto_norm) or texto_norm.startswith(envio_norm):
                             if c % 30 == 0:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto igual ao último envio")
@@ -1661,8 +1665,8 @@ class WhatsAppBot:
             if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 10:
                 ultimo_texto = self.ultimo_envio_texto.get(telefone, "")
                 if ultimo_texto and msg_texto:
-                    msg_norm = re.sub(r'\s+', ' ', msg_texto).strip().lower()
-                    env_norm = re.sub(r'\s+', ' ', ultimo_texto).strip().lower()
+                    msg_norm = re.sub(r'\s+', ' ', self._strip_emoji(msg_texto)).strip().lower()
+                    env_norm = re.sub(r'\s+', ' ', self._strip_emoji(ultimo_texto)).strip().lower()
                     if env_norm.startswith(msg_norm) or (len(msg_norm) > 20 and msg_norm in env_norm):
                         print(f"  [BOT-DEDUP] {safe(remetente)}: proprio bot ignorado", flush=True)
                         return
