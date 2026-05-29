@@ -1788,6 +1788,10 @@ class WhatsAppBot:
                         return
                     # Verifica status no Stripe
                     sess_id = venda_pend.get("stripe_session_id")
+                    if not sess_id and venda_pend.get("payment_url"):
+                        m = re.search(r"(cs_test_[a-zA-Z0-9]+)", venda_pend["payment_url"])
+                        if m:
+                            sess_id = m.group(1)
                     if sess_id and verificar_pagamento(sess_id):
                         from database import get_connection
                         conn = get_connection()
