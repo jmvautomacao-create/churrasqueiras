@@ -479,7 +479,7 @@ class WhatsAppBot:
                     continue
                 conn2 = get_connection()
                 conn2.execute("UPDATE vendas SET payment_status='pago', status='pago' WHERE id=?", (venda["id"],))
-                conn2.execute("UPDATE conversas SET etapa='fechada', status='fechada' WHERE id=?", (venda["conversa_id"],))
+                conn2.execute("UPDATE conversas SET etapa='fechada' WHERE id=?", (venda["conversa_id"],))
                 conn2.commit()
                 cli = conn2.execute("SELECT telefone, nome FROM clientes WHERE id=?", (venda["cliente_id"],)).fetchone()
                 conn2.close()
@@ -1663,6 +1663,13 @@ class WhatsAppBot:
 
             etapa = (conversa or {}).get("etapa", "")
 
+            # --- VENDA FINALIZADA: ignora mensagens futuras ---
+            if etapa == "fechada":
+                await self.enviar_para_cliente(telefone,
+                    "Seu pedido já foi finalizado. Obrigado pela compra!")
+                self.processando.pop(telefone, None)
+                return
+
             # --- FLUXO DE FRETE: coleta de dados ---
             if etapa == "frete_nome":
                 nome = msg_texto.strip()
@@ -1825,7 +1832,7 @@ class WhatsAppBot:
                         from database import get_connection
                         conn = get_connection()
                         conn.execute("UPDATE vendas SET payment_status='pago', status='pago' WHERE id=?", (venda_pend["id"],))
-                        conn.execute("UPDATE conversas SET etapa='fechada', status='fechada' WHERE id=?", (conv_id,))
+                        conn.execute("UPDATE conversas SET etapa='fechada' WHERE id=?", (conv_id,))
                         conn.commit()
                         conn.close()
                         atualizar_etapa_conversa(conv_id, "fechada")
