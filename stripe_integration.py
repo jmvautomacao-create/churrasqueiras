@@ -36,3 +36,12 @@ def criar_checkout_pix_cartao(
     except Exception as e:
         print(f"[STRIPE] Erro ao criar checkout: {e}")
         return None
+
+
+def verificar_pagamento(session_id: str) -> bool:
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        return session.payment_status == "paid"
+    except Exception as e:
+        print(f"[STRIPE] Erro ao verificar pagamento: {e}")
+        return False

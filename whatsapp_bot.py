@@ -14,10 +14,11 @@ from database import (
     cliente_por_telefone, criar_cliente, criar_conversa, salvar_mensagem,
     atualizar_etapa_conversa, atualizar_produto_interesse, criar_cotacao,
     atualizar_cotacao, criar_venda, get_historico_conversa, get_conversa_ativa,
-    atualizar_cliente, get_ultima_cotacao,
+    atualizar_cliente, get_ultima_cotacao, confirmar_pagamento, get_venda,
+    get_venda_pendente_conversa,
 )
 from gemini_agent import gerar_resposta, resposta_fallback, extrair_comando, limpar_resposta
-from stripe_integration import criar_checkout_pix_cartao
+from stripe_integration import criar_checkout_pix_cartao, verificar_pagamento
 from produtos import valor_produto, produto_por_id, detalhar
 
 
@@ -1572,6 +1573,27 @@ class WhatsAppBot:
             self.processando[telefone] = True
 
             # Ignora mensagens de sistema do WhatsApp
+            # Comando do vendedor: confirmar pagamento manual
+            if telefone == re.sub(r"\D", "", SEU_NUMERO) and msg_texto:
+                m_pagar = re.match(r"^pagar\s+(\d+)$", msg_texto.strip().lower())
+                if m_pagar:
+                    venda_id = int(m_pagar.group(1))
+                    venda = confirmar_pagamento(venda_id)
+                    if venda:
+                        tel_cliente = venda.get("cliente_telefone", "")
+                        nome_cliente = venda.get("cliente_nome", "")
+                        print(f"  [PAGAMENTO] Venda {venda_id} confirmada manualmente para {nome_cliente}", flush=True)
+                        await self.enviar_para_cliente(telefone,
+                            f"✅ Pagamento confirmado! Venda #{venda_id} - {nome_cliente}")
+                        if tel_cliente:
+                            await self.enviar_para_cliente(tel_cliente,
+                                f"✅ Pagamento confirmado! Seu pedido será processado em breve. Obrigado!")
+                    else:
+                        await self.enviar_para_cliente(telefone,
+                            f"Venda #{venda_id} não encontrada.")
+                    self.processando.pop(telefone, None)
+                    return
+
             if msg_texto and ("Meta" in msg_texto or "servi" in msg_texto.lower() or "gerenciar esta conversa" in msg_texto.lower()):
                 print(f"  -> Msg de sistema ignorada: {safe(msg_texto[:60])}", flush=True)
                 self.processando.pop(telefone, None)
@@ -1756,9 +1778,38 @@ class WhatsAppBot:
 
             # --- FRETE: aguardando pagamento do cliente ---
             if etapa == "frete_aguardando_pagamento":
-                await self.enviar_para_cliente(telefone,
-                    "Seu pedido está aguardando a confirmação do pagamento.\n"
-                    "Assim que o pagamento for confirmado, avisaremos você!")
+                venda_pend = get_venda_pendente_conversa(conv_id)
+                if venda_pend:
+                    if venda_pend.get("payment_status") == "pago":
+                        atualizar_etapa_conversa(conv_id, "fechada")
+                        await self.enviar_para_cliente(telefone,
+                            "✅ Pagamento confirmado! Seu pedido será processado em breve.")
+                        self.processando.pop(telefone, None)
+                        return
+                    # Verifica status no Stripe
+                    sess_id = venda_pend.get("stripe_session_id")
+                    if sess_id and verificar_pagamento(sess_id):
+                        from database import get_connection
+                        conn = get_connection()
+                        conn.execute("UPDATE vendas SET payment_status='pago', status='pago' WHERE id=?", (venda_pend["id"],))
+                        conn.execute("UPDATE conversas SET etapa='fechada', status='fechada' WHERE id=?", (conv_id,))
+                        conn.commit()
+                        conn.close()
+                        atualizar_etapa_conversa(conv_id, "fechada")
+                        await self.enviar_para_cliente(telefone,
+                            "✅ Pagamento confirmado! Seu pedido será processado em breve. Obrigado!")
+                        await self.enviar_para_cliente(SEU_NUMERO,
+                            f"✅ PAGAMENTO CONFIRMADO - Venda #{venda_pend['id']} - {venda_pend.get('cliente_nome', '')}")
+                        print(f"[PAGAMENTO] Stripe confirmou pagamento da venda {venda_pend['id']}", flush=True)
+                        self.processando.pop(telefone, None)
+                        return
+                link = venda_pend.get("payment_url", "") if venda_pend else ""
+                msg = "Seu pedido está aguardando a confirmação do pagamento.\n"
+                if link:
+                    msg += f"💳 Link para pagamento: {link}"
+                else:
+                    msg += "Assim que o pagamento for confirmado, avisaremos você!"
+                await self.enviar_para_cliente(telefone, msg)
                 self.processando.pop(telefone, None)
                 return
 

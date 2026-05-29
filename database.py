@@ -275,9 +275,55 @@ def get_conversa_ativa(telefone):
                   cl.endereco, cl.cpf_cnpj, c.etapa, c.produto_interesse_id
            FROM conversas c
            JOIN clientes cl ON cl.id = c.cliente_id
-           WHERE cl.telefone = ? AND c.status = 'ativo'
-           ORDER BY c.atualizado_em DESC LIMIT 1""",
+            WHERE cl.telefone = ? AND c.status = 'ativo'
+            ORDER BY c.atualizado_em DESC LIMIT 1""",
         (telefone,),
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_venda_pendente_conversa(conversa_id: int):
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT v.*, c.nome as cliente_nome, c.telefone as cliente_telefone
+           FROM vendas v
+           JOIN clientes c ON c.id = v.cliente_id
+           WHERE v.conversa_id = ?
+           ORDER BY v.criado_em DESC LIMIT 1""",
+        (conversa_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_venda(venda_id: int):
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT v.*, c.telefone as cliente_telefone, c.nome as cliente_nome
+           FROM vendas v
+           JOIN clientes c ON c.id = v.cliente_id
+           WHERE v.id = ?""",
+        (venda_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def confirmar_pagamento(venda_id: int):
+    conn = get_connection()
+    venda = conn.execute("SELECT * FROM vendas WHERE id = ?", (venda_id,)).fetchone()
+    if not venda:
+        conn.close()
+        return None
+    conn.execute(
+        "UPDATE vendas SET payment_status = 'pago', status = 'pago' WHERE id = ?",
+        (venda_id,),
+    )
+    conn.execute(
+        "UPDATE conversas SET etapa = 'fechada', status = 'fechada' WHERE id = ?",
+        (venda["conversa_id"],),
+    )
+    conn.commit()
+    conn.close()
+    return dict(venda)
