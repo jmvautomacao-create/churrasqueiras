@@ -1413,9 +1413,8 @@ class WhatsAppBot:
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA:    dias úteis"
         )
-        # Tenta enviar via sidebar primeiro
-        async with self.sidebar_lock:
-            ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
+        # Tenta enviar via sidebar (enviar_texto já gerencia o lock internamente)
+        ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
         if ok:
             print(f"  -> FOB enviado #{request_id}", flush=True)
             self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
