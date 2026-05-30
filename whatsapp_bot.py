@@ -1582,7 +1582,7 @@ class WhatsAppBot:
                 if resp == reg["texto_antes"]:
                     continue
                 # Dedup entre ciclos (so add se o req_id realmente corresponder)
-                dedup_key = f"{tel}|{resp}"
+                dedup_key = f"{req_id}|{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
                     continue
                 if req_id not in resp:
