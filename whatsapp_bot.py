@@ -1346,8 +1346,14 @@ class WhatsAppBot:
                 const msgs = painel.querySelectorAll(':scope .message-in');
                 const usuarios = [];
                 for (const el of msgs) {
-                    const textEl = el.querySelector('span[dir="ltr"], span[dir="auto"]');
-                    if (textEl && textEl.textContent.trim()) usuarios.push(textEl.textContent.trim());
+                    const spans = el.querySelectorAll('span[dir="ltr"], span[dir="auto"]');
+                    let textoCompleto = '';
+                    for (const s of spans) {
+                        const t = s.textContent.trim();
+                        if (t) textoCompleto += t + ' ';
+                    }
+                    const t = textoCompleto.trim();
+                    if (t) usuarios.push(t);
                 }
                 if (usuarios.length === 0) return '';
                 return usuarios[usuarios.length - 1];
@@ -1568,7 +1574,7 @@ class WhatsAppBot:
                     ok = await self._abrir_chat_sidebar(telefone=tel)
                     if not ok:
                         continue
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.5)
                     header_atual = await self._ler_header_chat()
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
@@ -1589,7 +1595,7 @@ class WhatsAppBot:
                     print(f"  [frete] Resposta #{req_id} ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
                     continue
                 self._respostas_frete_vistas.add(dedup_key)
-                print(f"  [frete] Resposta CRUDA {trans_nome} #{req_id}: '{safe(resp)}'", flush=True)
+                print(f"  [frete] Resposta CRUDA {trans_nome} #{req_id} ({len(resp)} chars): '{safe(resp)}'", flush=True)
                 try:
                     valor = self.extrair_valor_frete(resp)
                     prazo = self.extrair_prazo(resp)
