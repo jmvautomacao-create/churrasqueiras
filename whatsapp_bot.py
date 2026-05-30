@@ -1581,15 +1581,14 @@ class WhatsAppBot:
                 # Se o texto não mudou, ainda sem resposta nova
                 if resp == reg["texto_antes"]:
                     continue
-                # Dedup entre ciclos
+                # Dedup entre ciclos (so add se o req_id realmente corresponder)
                 dedup_key = f"{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
                     continue
-                self._respostas_frete_vistas.add(dedup_key)
-                # Cross-check: verifica se o Protocolo de Solicitação na resposta corresponde a este req_id
                 if req_id not in resp:
                     print(f"  [frete] Resposta #{req_id} ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
                     continue
+                self._respostas_frete_vistas.add(dedup_key)
                 print(f"  [frete] Resposta CRUDA {trans_nome} #{req_id}: '{safe(resp)}'", flush=True)
                 try:
                     valor = self.extrair_valor_frete(resp)
