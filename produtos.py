@@ -53,11 +53,11 @@ def submenu_produto(produto: dict) -> str:
     return (
         f"Você escolheu: {produto['nome']}\n\n"
         f"Escolha uma opção:\n"
-        f"  [a] Folder - Ver folder do produto\n"
-        f"  [b] Valor - Consultar preço\n"
-        f"  [c] Foto - Enviar foto\n"
-        f"  [d] Vídeo - Enviar vídeo\n"
-        f"  [e] Frete - Solicitar cotação de frete\n\n"
+        f"  [a] Ver o folder do produto\n"
+        f"  [b] Consultar o preço\n"
+        f"  [c] Enviar uma foto\n"
+        f"  [d] Enviar um vídeo\n"
+        f"  [e] Solicitar cotação de frete\n\n"
         f"Digite a letra da opção desejada."
     )
 
