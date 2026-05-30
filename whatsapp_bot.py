@@ -1164,9 +1164,8 @@ class WhatsAppBot:
     async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = "", force_document: bool = False):
         await self.enviar_midia(numero, caminho, legenda, force_document)
 
-    def _gerar_id_frete(self) -> str:
-        from uuid import uuid4
-        return datetime.now().strftime("%Y%m%d-") + uuid4().hex[:8]
+    def _gerar_id_frete(self, cpf_cnpj: str) -> str:
+        return cpf_cnpj
 
     async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
@@ -1183,7 +1182,7 @@ class WhatsAppBot:
             f"CEP: {cliente_info.get('cep', 'N/I')}\n"
             f"{'='*30}\n"
             f"Favor retornar as informações abaixo:\n\n"
-            f"Protocolo de Solicitação: {request_id}\n"
+            f"CPF/CNPJ: {request_id}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA:    dias úteis"
@@ -1402,7 +1401,7 @@ class WhatsAppBot:
             "cep": cliente.get("cep", ""),
             "estado": cliente.get("estado", ""),
         }
-        request_id = self._gerar_id_frete()
+        request_id = self._gerar_id_frete(ci["cpf_cnpj"])
         transportadoras_reg = {}
         for t in TRANSPORTADORAS:
             cot_id = criar_cotacao(conv_id, t["nome"])
@@ -1426,7 +1425,7 @@ class WhatsAppBot:
             "status": "enviado",
         }
         await self.enviar_para_cliente(telefone,
-            f"Consultando fretes... (protocolo {request_id})")
+            f"Consultando fretes... (CPF: {request_id})")
         # Envia para transportadoras A/B via sidebar
         for t in TRANSPORTADORAS:
             await self.solicitar_frete_transportadora(t, produto, ci, request_id)
@@ -1447,7 +1446,7 @@ class WhatsAppBot:
             f"Endereço: {endereco}\n"
             f"{'='*30}\n"
             f"Favor retornar as informações abaixo:\n\n"
-            f"Protocolo de Solicitação: {request_id}\n"
+            f"CPF/CNPJ: {request_id}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA:    dias úteis"
@@ -1455,7 +1454,7 @@ class WhatsAppBot:
         # Tenta enviar via sidebar primeiro (sem page.goto)
         ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
         if ok:
-            print(f"  -> FOB enviado #{request_id}", flush=True)
+            print(f"  -> FOB enviado (CPF: {request_id})", flush=True)
             self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
             self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
             if request_id in self.fretes_pendentes:
@@ -1480,7 +1479,7 @@ class WhatsAppBot:
                 self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
                 self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
                 await self._clicar_enviar(usar_enter=True)
-                print(f"  -> FOB enviado #{request_id} (goto)", flush=True)
+                print(f"  -> FOB enviado (CPF: {request_id}) (goto)", flush=True)
                 if request_id in self.fretes_pendentes:
                     for t in self.fretes_pendentes[request_id]["transportadoras"].values():
                         if t["telefone"] == self.TRANSPORTADORA_FOB:
@@ -1530,7 +1529,7 @@ class WhatsAppBot:
             "estado": cliente.get("estado", "N/I"),
             "cep": cliente.get("cep", "N/I"),
         }
-        request_id = self._gerar_id_frete()
+        request_id = self._gerar_id_frete(cliente.get("cpf_cnpj", ""))
         cot_id = criar_cotacao(conv_id, "FOB")
         self.fretes_pendentes[request_id] = {
             "telefone": telefone,
@@ -1556,7 +1555,7 @@ class WhatsAppBot:
             conn.commit()
             conn.close()
         await self.enviar_para_cliente(telefone,
-            f"Consultando frete FOB... (protocolo {request_id})")
+            f"Consultando frete FOB... (CPF: {request_id})")
         await self._enviar_fob_msg(produto, ci, request_id)
 
     async def _processar_fretes_pendentes(self):
@@ -1592,10 +1591,10 @@ class WhatsAppBot:
                 if dedup_key in self._respostas_frete_vistas:
                     continue
                 if req_id not in resp:
-                    print(f"  [frete] Resposta #{req_id} ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
+                    print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
                     continue
                 self._respostas_frete_vistas.add(dedup_key)
-                print(f"  [frete] Resposta CRUDA {trans_nome} #{req_id} ({len(resp)} chars): '{safe(resp)}'", flush=True)
+                print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
                 try:
                     valor = self.extrair_valor_frete(resp)
                     prazo = self.extrair_prazo(resp)
@@ -1606,9 +1605,9 @@ class WhatsAppBot:
                     if incompleto:
                         reg["tentativas"] = reg.get("tentativas", 0) + 1
                         if reg["tentativas"] >= 3:
-                            print(f"  [frete] Resposta #{req_id} incompleta apos {reg['tentativas']} tentativas, encaminhando mesmo assim", flush=True)
+                            print(f"  [frete] Resposta (CPF: {req_id}) incompleta apos {reg['tentativas']} tentativas, encaminhando mesmo assim", flush=True)
                         else:
-                            print(f"  [frete] Resposta #{req_id} incompleta (tentativa {reg['tentativas']}/3), reenviando solicitacao...", flush=True)
+                            print(f"  [frete] Resposta (CPF: {req_id}) incompleta (tentativa {reg['tentativas']}/3), reenviando solicitacao...", flush=True)
                             cliente_info = req.get("cliente_info", {})
                             await self._enviar_fob_msg(req["produto"], cliente_info, req_id)
                             continue
@@ -1617,7 +1616,7 @@ class WhatsAppBot:
                     if reg.get("cot_id"):
                         atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
                     msg_cliente = (
-                        f"Frete {trans_nome} (protocolo {req_id}):\n"
+                        f"Frete {trans_nome} (CPF: {req_id}):\n"
                     )
                     if valor > 0:
                         msg_cliente += f"Valor: R$ {valor:.2f}\n"
