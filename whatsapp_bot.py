@@ -627,7 +627,7 @@ class WhatsAppBot:
                     if texto and ultimo_env:
                         texto_norm = re.sub(r'\s+', ' ', self._strip_emoji(texto)).strip().lower()
                         envio_norm = re.sub(r'\s+', ' ', self._strip_emoji(ultimo_env)).strip().lower()
-                        if envio_norm.startswith(texto_norm) or texto_norm.startswith(envio_norm):
+                        if (envio_norm.startswith(texto_norm) or texto_norm.startswith(envio_norm)) and len(texto_norm) >= 20:
                             if c % 30 == 0:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto igual ao último envio")
                             continue
@@ -2027,7 +2027,7 @@ class WhatsAppBot:
             # --- FRETE: aguardando confirmacao do cliente ---
             if etapa == "frete_confirmar":
                 opt = self._n(msg_texto.strip().lower())
-                if opt in ("sim", "s", "1", "f"):
+                if opt in ("sim", "s", "1", "f") or opt.startswith(("sim", "s")):
                     cliente_dados = cliente_por_telefone(telefone)
                     produto = produto_por_id(conversa.get("produto_interesse_id") or 0)
                     if cliente_dados and produto:
@@ -2068,7 +2068,7 @@ class WhatsAppBot:
                         print(f"VENDA PENDENTE: {safe(cliente_dados.get('nome',''))} - {safe(produto['nome'])} - {safe(link_pagamento or 'N/D')}")
                     else:
                         await self.enviar_para_cliente(telefone, "Erro ao processar confirmação.")
-                elif opt in ("nao", "não", "2", "g", "voltar"):
+                elif opt in ("nao", "não", "2", "g", "voltar") or opt.startswith(("nao", "não")):
                     ult_cot = get_ultima_cotacao(conv_id)
                     xlsx_path = ult_cot.get("xlsx_path") if ult_cot else None
                     if xlsx_path and os.path.exists(xlsx_path):
