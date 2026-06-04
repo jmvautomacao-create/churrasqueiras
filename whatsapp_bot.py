@@ -63,6 +63,7 @@ class WhatsAppBot:
         self.fretes_pendentes: dict[str, dict] = {}
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
+        self._ultimo_texto_transportadora: dict[str, str] = {}
         self._cache_cep: dict[str, dict] = {}
         self._cache_endereco: dict[str, dict] = {}
         self.fila_mensagens: asyncio.Queue | None = None
@@ -590,10 +591,14 @@ class WhatsAppBot:
                     transportadoras_tels = set(t["numero"] for t in TRANSPORTADORAS) | {self.TRANSPORTADORA_FOB}
                     if telefone in transportadoras_tels:
                         if texto and nao_lida and self.fretes_pendentes:
-                            resposta_id = self._match_transportadora_resposta(telefone, texto)
-                            if resposta_id:
-                                print(f"  [{c}] {safe(nome_raw)}: resposta de frete detectada (CPF: {resposta_id})", flush=True)
-                                await self._processar_resposta_transportadora(nome_raw, telefone, texto)
+                            # Só processa se o texto da sidebar mudou (evita re-detecção a cada ciclo)
+                            texto_anterior = self._ultimo_texto_transportadora.get(telefone, "")
+                            if texto != texto_anterior:
+                                self._ultimo_texto_transportadora[telefone] = texto
+                                resposta_id = self._match_transportadora_resposta(telefone, texto)
+                                if resposta_id:
+                                    print(f"  [{c}] {safe(nome_raw)}: resposta de frete detectada (CPF: {resposta_id})", flush=True)
+                                    await self._processar_resposta_transportadora(nome_raw, telefone, texto)
                         continue
 
                     # Dedup intra-ciclo: chats duplicados (ex: role="row" aninhado)
@@ -1647,12 +1652,18 @@ class WhatsAppBot:
         if req_id not in resp:
             print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem completa", flush=True)
             return
+        # Guarda: texto igual ao texto_antes (bot's own message ainda aparece no sidebar)
+        if resp == reg.get("texto_antes", ""):
+            return
+        # Guarda: muito cedo (<10s) após envio — provável falso positivo da propria mensagem
+        if time.time() - reg.get("enviado_em", 0) < 10:
+            return
         dedup_key = f"{req_id}|{telefone}|{resp}"
         if dedup_key in self._respostas_frete_vistas:
             return
+        self._respostas_frete_vistas.add(dedup_key)
         if resp.startswith("SOLICITAÇÃO DE COTAÇÃO DE FRETE"):
             return
-        self._respostas_frete_vistas.add(dedup_key)
         print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
         try:
             valor = self.extrair_valor_frete(resp)
