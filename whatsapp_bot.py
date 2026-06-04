@@ -490,7 +490,7 @@ class WhatsAppBot:
                 if self.fretes_pendentes:
                     await self._processar_fretes_pendentes()
                 await self._verificar_pagamentos_pendentes()
-                await asyncio.sleep(3)
+                await asyncio.sleep(10)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1627,49 +1627,67 @@ class WhatsAppBot:
                         f"Não recebi resposta da transportadora {trans_nome} para seu frete. Entrarei em contato em breve.",
                         req.get("nome_sidebar", ""))
                     continue
-                # Throttle: só navega a cada 60s por transportadora
+                # Throttle: pula sem adquirir lock se j� verificou h� <60s
                 agora = time.time()
                 ult_verif = self._ultima_verif_frete.get(tel, 0)
-                precisa_navegar = (agora - ult_verif > 60)
-                if precisa_navegar:
-                    self._ultima_verif_frete[tel] = agora
-                # Verifica se ja esta no chat da transportadora (evita reabrir e abrir perfil)
+                if agora - ult_verif <= 60:
+                    self._ciclo_frete_log += 1
+                    if self._ciclo_frete_log % 30 == 0:
+                        print(f"  [frete] {trans_nome} ({tel}) throttled ({(agora - ult_verif):.0f}s)", flush=True)
+                    continue
+                self._ultima_verif_frete[tel] = agora
+
                 nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
+                ja_no_chat = False
                 async with self.sidebar_lock:
                     header_atual = await self._ler_header_chat()
                     header_digits = re.sub(r"\D", "", header_atual or "")
                     ja_no_chat = bool(header_digits and (tel in header_digits or header_digits in tel))
 
-                    if not ja_no_chat and precisa_navegar:
-                        # Navega para o chat da transportadora
+                    if not ja_no_chat:
                         if nome_trans:
                             ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
                         else:
                             ok = await self._abrir_chat_sidebar(telefone=tel)
                         if not ok:
-                            print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
+                            print(f"  [frete] Chat n�o encontrado para {trans_nome} ({tel})", flush=True)
+                            # Volta ao chat do cliente antes de continuar
+                            tel_cliente = req["telefone"]
+                            nome_sidebar_cliente = req.get("nome_sidebar", "")
+                            if nome_sidebar_cliente:
+                                await self._abrir_chat_sidebar(nome=nome_sidebar_cliente, telefone=tel_cliente)
+                            else:
+                                await self._abrir_chat_sidebar(telefone=tel_cliente)
                             continue
                         await asyncio.sleep(1.5)
-                        # Fecha perfil se abriu
                         header_atual = await self._ler_header_chat()
                         if not header_atual or "Dados do perfil" in header_atual:
                             await self.page.keyboard.press("Escape")
                             await asyncio.sleep(0.5)
                             header_atual = await self._ler_header_chat()
-                    elif not ja_no_chat and not precisa_navegar:
-                        self._ciclo_frete_log += 1
-                        if self._ciclo_frete_log % 30 == 0:
-                            print(f"  [frete] {trans_nome} ({tel}) navegação throttled ({(agora - ult_verif):.0f}s)", flush=True)
-                        continue
                     else:
                         await asyncio.sleep(0.3)
 
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
                         if header_digits and tel not in header_digits and header_digits not in tel:
-                            print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
+                            print(f"  [frete] Header '{safe(header_atual)}' n�o corresponde a {tel}, ignorando ciclo", flush=True)
+                            # Volta ao chat do cliente antes de continuar
+                            tel_cliente = req["telefone"]
+                            nome_sidebar_cliente = req.get("nome_sidebar", "")
+                            if nome_sidebar_cliente:
+                                await self._abrir_chat_sidebar(nome=nome_sidebar_cliente, telefone=tel_cliente)
+                            else:
+                                await self._abrir_chat_sidebar(telefone=tel_cliente)
                             continue
                     resp = await self._ler_msg_anterior_usuario()
+                    # Volta ao chat do cliente imediatamente para n�o deixar sidebar presa
+                    tel_cliente = req["telefone"]
+                    nome_sidebar_cliente = req.get("nome_sidebar", "")
+                    if nome_sidebar_cliente:
+                        await self._abrir_chat_sidebar(nome=nome_sidebar_cliente, telefone=tel_cliente)
+                    else:
+                        await self._abrir_chat_sidebar(telefone=tel_cliente)
                 if not resp:
                     continue
                 # Se o texto não mudou, ainda sem resposta nova
