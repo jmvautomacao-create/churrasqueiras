@@ -2069,6 +2069,11 @@ class WhatsAppBot:
                     else:
                         await self.enviar_para_cliente(telefone, "Erro ao processar confirmação.")
                 else:
+                    ult_cot = get_ultima_cotacao(conv_id)
+                    xlsx_path = ult_cot.get("xlsx_path") if ult_cot else None
+                    if xlsx_path and os.path.exists(xlsx_path):
+                        os.remove(xlsx_path)
+                        print(f"  -> XLSX excluído: {os.path.basename(xlsx_path)}", flush=True)
                     atualizar_etapa_conversa(conv_id, "menu_principal")
                     await self.enviar_para_cliente(telefone, "Tudo bem! Se precisar de algo, estou aqui.")
                 self.processando.pop(telefone, None)
