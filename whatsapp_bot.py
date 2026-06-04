@@ -1574,16 +1574,25 @@ class WhatsAppBot:
                 if reg["respondido"]:
                     continue
                 tel = reg["telefone"]
-                # Abre o chat da transportadora via sidebar (com lock)
+                # Pula transportadoras com número placeholder
+                if tel in ("555199999991", "555199999992"):
+                    print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
+                    continue
+                # Tenta abrir por nome mapeado primeiro (mais confiável que telefone)
+                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
                 async with self.sidebar_lock:
-                    ok = await self._abrir_chat_sidebar(telefone=tel)
+                    if nome_trans:
+                        ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
+                    else:
+                        ok = await self._abrir_chat_sidebar(telefone=tel)
                     if not ok:
+                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
                         continue
                     await asyncio.sleep(1.5)
                     header_atual = await self._ler_header_chat()
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
-                        if tel not in header_digits and header_digits not in tel:
+                        if header_digits and tel not in header_digits and header_digits not in tel:
                             print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
                             continue
                     resp = await self._ler_msg_anterior_usuario()
