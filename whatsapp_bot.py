@@ -64,6 +64,7 @@ class WhatsAppBot:
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
         self._ultima_verif_frete: dict[str, float] = {}
+        self._ciclo_frete_log: int = 0
         self._cache_cep: dict[str, dict] = {}
         self._cache_endereco: dict[str, dict] = {}
         self.fila_mensagens: asyncio.Queue | None = None
@@ -396,6 +397,14 @@ class WhatsAppBot:
                 del self.ultimo_envio_sucesso[k]
         # Limpa dedup de respostas de frete (retem apenas ultima 1h)
         self._respostas_frete_vistas.clear()
+        # Limpa fretes pendentes antigos (respondidos ou timeout > 1h)
+        for req_id in list(self.fretes_pendentes):
+            req = self.fretes_pendentes[req_id]
+            todos_respondidos = all(t["respondido"] for t in req["transportadoras"].values())
+            mais_velho = min(t.get("enviado_em", 0) for t in req["transportadoras"].values())
+            if todos_respondidos and (agora - mais_velho > 3600):
+                del self.fretes_pendentes[req_id]
+                print(f"  [frete] Cleanup: {req_id} removido (respondido há >1h)", flush=True)
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
 
     async def detectar_chats(self):
@@ -1589,6 +1598,11 @@ class WhatsAppBot:
             msg_atual = await self._ler_msg_anterior_usuario()
             if msg_atual:
                 self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["texto_antes"] = msg_atual
+            # Volta para o chat do cliente para nao deixar sidebar presa na transportadora
+            if nome_sidebar:
+                await self._abrir_chat_sidebar(nome=nome_sidebar, telefone=telefone)
+            else:
+                await self._abrir_chat_sidebar(telefone=telefone)
 
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
@@ -1604,10 +1618,19 @@ class WhatsAppBot:
                 if tel in ("555199999991", "555199999992"):
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
-                # Throttle: só navega a cada 15s por transportadora
+                # Timeout: 30min sem resposta
+                enviado_em = reg.get("enviado_em", 0)
+                if time.time() - enviado_em > 1800:
+                    reg["respondido"] = True
+                    print(f"  [frete] {trans_nome} ({tel}) timeout 30min, notificando cliente", flush=True)
+                    await self.enviar_para_cliente(req["telefone"],
+                        f"Não recebi resposta da transportadora {trans_nome} para seu frete. Entrarei em contato em breve.",
+                        req.get("nome_sidebar", ""))
+                    continue
+                # Throttle: só navega a cada 60s por transportadora
                 agora = time.time()
                 ult_verif = self._ultima_verif_frete.get(tel, 0)
-                precisa_navegar = (agora - ult_verif > 15)
+                precisa_navegar = (agora - ult_verif > 60)
                 if precisa_navegar:
                     self._ultima_verif_frete[tel] = agora
                 # Verifica se ja esta no chat da transportadora (evita reabrir e abrir perfil)
@@ -1634,7 +1657,9 @@ class WhatsAppBot:
                             await asyncio.sleep(0.5)
                             header_atual = await self._ler_header_chat()
                     elif not ja_no_chat and not precisa_navegar:
-                        print(f"  [frete] {trans_nome} ({tel}) navegação throttled ({(agora - ult_verif):.0f}s desde último check)", flush=True)
+                        self._ciclo_frete_log += 1
+                        if self._ciclo_frete_log % 30 == 0:
+                            print(f"  [frete] {trans_nome} ({tel}) navegação throttled ({(agora - ult_verif):.0f}s)", flush=True)
                         continue
                     else:
                         await asyncio.sleep(0.3)
