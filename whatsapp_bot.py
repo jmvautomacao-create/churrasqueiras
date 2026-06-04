@@ -1799,6 +1799,19 @@ class WhatsAppBot:
                     print(f"  -> Falha ao reiniciar menu para {safe(remetente)}", flush=True)
                 return
 
+            # Agradecimento: nao abre menu, apenas responde e encerra
+            agradecimentos = {"obrigado", "obrigada", "valeu", "brigado", "brigada",
+                              "muito obrigado", "muito obrigada", "obrigadão",
+                              "agradecido", "thanks", "thank you"}
+            msg_clean = msg_texto.strip().lower().rstrip("?!.")
+            if msg_clean in agradecimentos:
+                await self.enviar_para_cliente(telefone,
+                    "😊 Por nada! Estou aqui para ajudar. É só me chamar quando precisar.",
+                    nome_sidebar)
+                salvar_mensagem(conv_id, "agente", "Por nada!")
+                self.processando.pop(telefone, None)
+                return
+
             etapa = (conversa or {}).get("etapa", "")
 
             # --- CLIENTE COM COMPRA ANTERIOR: pergunta nova compra ou informações ---
