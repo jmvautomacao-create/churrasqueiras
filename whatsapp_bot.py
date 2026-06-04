@@ -1358,8 +1358,8 @@ class WhatsAppBot:
             () => {
                 const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
                 if (!painel) return '';
-                const msgs = painel.querySelectorAll(':scope .message-in');
-                const usuarios = [];
+                const msgs = painel.querySelectorAll(':scope > div');
+                const todas = [];
                 for (const el of msgs) {
                     const spans = el.querySelectorAll('span[dir="ltr"], span[dir="auto"]');
                     let textoCompleto = '';
@@ -1368,10 +1368,10 @@ class WhatsAppBot:
                         if (t) textoCompleto += t + ' ';
                     }
                     const t = textoCompleto.trim();
-                    if (t) usuarios.push(t);
+                    if (t) todas.push(t);
                 }
-                if (usuarios.length === 0) return '';
-                return usuarios[usuarios.length - 1];
+                if (todas.length === 0) return '';
+                return todas[todas.length - 1];
             }
         """)
         return raw.strip()
@@ -1648,15 +1648,18 @@ class WhatsAppBot:
             else:
                 await self._abrir_chat_sidebar(telefone=tel_cliente)
         if not resp:
+            print(f"  [frete] {trans_nome}: resp vazia (chat pode estar sem mensagens visiveis)", flush=True)
             return
         if req_id not in resp:
             print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem completa", flush=True)
             return
         # Guarda: texto igual ao texto_antes (bot's own message ainda aparece no sidebar)
         if resp == reg.get("texto_antes", ""):
+            print(f"  [frete] {trans_nome}: mesmo texto da solicitacao, ignorado", flush=True)
             return
         # Guarda: muito cedo (<10s) após envio — provável falso positivo da propria mensagem
         if time.time() - reg.get("enviado_em", 0) < 10:
+            print(f"  [frete] {trans_nome}: ignorado (<10s apos envio)", flush=True)
             return
         dedup_key = f"{req_id}|{telefone}|{resp}"
         if dedup_key in self._respostas_frete_vistas:
