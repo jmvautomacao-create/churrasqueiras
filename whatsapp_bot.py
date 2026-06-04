@@ -1597,15 +1597,9 @@ class WhatsAppBot:
                 if dedup_key in self._respostas_frete_vistas:
                     continue
                 if req_id not in resp:
-                    parece_cotacao = bool(re.search(
-                        r"(R\s*\$\s*[\d.,]+|VALOR DO FRETE|PRAZO.*(?:dia|úteis)|FRETE.*R\$)",
-                        resp, re.IGNORECASE
-                    ))
-                    if not parece_cotacao:
-                        print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado e não parece cotação", flush=True)
-                        self._respostas_frete_vistas.add(dedup_key)
-                        continue
-                    print(f"  [frete] Resposta (CPF: {req_id}) aceita como cotação mesmo sem CPF no texto", flush=True)
+                    print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
+                    self._respostas_frete_vistas.add(dedup_key)
+                    continue
                 self._respostas_frete_vistas.add(dedup_key)
                 print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
                 try:
