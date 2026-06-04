@@ -1571,6 +1571,8 @@ class WhatsAppBot:
         # Captura texto_antes APOS enviar a solicitacao, para ignorar a propria mensagem
         await asyncio.sleep(1)
         async with self.sidebar_lock:
+            await self.page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
             nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
             if nome_fob:
                 await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
@@ -1614,12 +1616,27 @@ class WhatsAppBot:
                             print(f"  [frete] page.goto falhou para {tel}: {safe(str(e)[:60])}", flush=True)
                             continue
                     await asyncio.sleep(1.5)
+                    # Fecha qualquer modal/painel que possa estar aberto (ex: perfil)
+                    await self.page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
                     header_atual = await self._ler_header_chat()
+                    if header_atual and "Dados do perfil" in header_atual:
+                        print(f"  [frete] Perfil aberto no lugar da conversa para {trans_nome} ({tel}), forçando page.goto...", flush=True)
+                        try:
+                            url_transp = f"https://web.whatsapp.com/send/?phone={tel}"
+                            await self.page.goto(url_transp, timeout=20000)
+                            await asyncio.sleep(2)
+                            await self.page.keyboard.press("Escape")
+                            await asyncio.sleep(0.3)
+                            header_atual = await self._ler_header_chat()
+                        except Exception as e:
+                            print(f"  [frete] page.goto falhou: {safe(str(e)[:60])}", flush=True)
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
                         if header_digits and tel not in header_digits and header_digits not in tel:
-                            print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
-                            continue
+                            if "Dados do perfil" not in header_atual and "Dados" not in header_atual:
+                                print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
+                                continue
                     resp = await self._ler_msg_anterior_usuario()
                     print(f"  [frete] {trans_nome}: header='{safe(header_atual)}' resp_len={len(resp) if resp else 0} req_id={req_id}", flush=True)
                     if resp:
