@@ -1604,6 +1604,7 @@ class WhatsAppBot:
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
                 # Verifica se ja esta no chat da transportadora (evita reabrir e abrir perfil)
+                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
                 async with self.sidebar_lock:
                     header_atual = await self._ler_header_chat()
                     header_digits = re.sub(r"\D", "", header_atual or "")
