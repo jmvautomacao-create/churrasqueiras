@@ -1567,17 +1567,24 @@ class WhatsAppBot:
         # Captura texto_antes APOS enviar a solicitacao, para ignorar a propria mensagem
         await asyncio.sleep(1)
         async with self.sidebar_lock:
-            if self.mapa_contatos and self.TRANSPORTADORA_FOB in self.mapa_contatos.values():
-                nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
-                await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
-            else:
-                await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
-            await asyncio.sleep(0.5)
-            # Fecha perfil se tiver aberto
+            # Verifica se ja esta no chat FOB (evita reabrir e abrir perfil)
             header_atual = await self._ler_header_chat()
-            if not header_atual or "Dados do perfil" in header_atual:
-                await self.page.keyboard.press("Escape")
-                await asyncio.sleep(0.3)
+            header_digits = re.sub(r"\D", "", header_atual or "")
+            ja_no_chat = bool(header_digits and (
+                self.TRANSPORTADORA_FOB in header_digits or header_digits in self.TRANSPORTADORA_FOB
+            ))
+            if not ja_no_chat:
+                if self.mapa_contatos and self.TRANSPORTADORA_FOB in self.mapa_contatos.values():
+                    nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
+                    await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
+                else:
+                    await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
+                await asyncio.sleep(0.5)
+                # Fecha perfil se tiver aberto
+                header_atual = await self._ler_header_chat()
+                if not header_atual or "Dados do perfil" in header_atual:
+                    await self.page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
             msg_atual = await self._ler_msg_anterior_usuario()
             if msg_atual:
                 self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["texto_antes"] = msg_atual
@@ -1596,24 +1603,31 @@ class WhatsAppBot:
                 if tel in ("555199999991", "555199999992"):
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
-                # Tenta abrir por nome mapeado primeiro (mais confiável que telefone)
-                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
+                # Verifica se ja esta no chat da transportadora (evita reabrir e abrir perfil)
                 async with self.sidebar_lock:
-                    if nome_trans:
-                        ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
-                    else:
-                        ok = await self._abrir_chat_sidebar(telefone=tel)
-                    if not ok:
-                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
-                        continue
-                    await asyncio.sleep(1.5)
-                    # Se perfil aberto, fecha com Escape para poder ler as mensagens
                     header_atual = await self._ler_header_chat()
-                    if not header_atual or "Dados do perfil" in header_atual:
-                        print(f"  [frete] Perfil aberto para {trans_nome}, Escape...", flush=True)
-                        await self.page.keyboard.press("Escape")
-                        await asyncio.sleep(0.5)
+                    header_digits = re.sub(r"\D", "", header_atual or "")
+                    ja_no_chat = bool(header_digits and (tel in header_digits or header_digits in tel))
+
+                    if not ja_no_chat:
+                        # Navega para o chat da transportadora
+                        if nome_trans:
+                            ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
+                        else:
+                            ok = await self._abrir_chat_sidebar(telefone=tel)
+                        if not ok:
+                            print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
+                            continue
+                        await asyncio.sleep(1.5)
+                        # Fecha perfil se abriu
                         header_atual = await self._ler_header_chat()
+                        if not header_atual or "Dados do perfil" in header_atual:
+                            await self.page.keyboard.press("Escape")
+                            await asyncio.sleep(0.5)
+                            header_atual = await self._ler_header_chat()
+                    else:
+                        await asyncio.sleep(0.3)
+
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
                         if header_digits and tel not in header_digits and header_digits not in tel:
