@@ -63,7 +63,6 @@ class WhatsAppBot:
         self.fretes_pendentes: dict[str, dict] = {}
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
-        self._ultimo_texto_transportadora: dict[str, str] = {}
         self._cache_cep: dict[str, dict] = {}
         self._cache_endereco: dict[str, dict] = {}
         self.fila_mensagens: asyncio.Queue | None = None
@@ -396,14 +395,6 @@ class WhatsAppBot:
                 del self.ultimo_envio_sucesso[k]
         # Limpa dedup de respostas de frete (retem apenas ultima 1h)
         self._respostas_frete_vistas.clear()
-        # Limpa fretes pendentes antigos (respondidos ou timeout > 1h)
-        for req_id in list(self.fretes_pendentes):
-            req = self.fretes_pendentes[req_id]
-            todos_respondidos = all(t["respondido"] for t in req["transportadoras"].values())
-            mais_velho = min(t.get("enviado_em", 0) for t in req["transportadoras"].values())
-            if todos_respondidos and (agora - mais_velho > 3600):
-                del self.fretes_pendentes[req_id]
-                print(f"  [frete] Cleanup: {req_id} removido (respondido há >1h)", flush=True)
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
 
     async def detectar_chats(self):
@@ -489,7 +480,7 @@ class WhatsAppBot:
                 if self.fretes_pendentes:
                     await self._processar_fretes_pendentes()
                 await self._verificar_pagamentos_pendentes()
-                await asyncio.sleep(10)
+                await asyncio.sleep(3)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -587,18 +578,11 @@ class WhatsAppBot:
                     if not nome_raw or nome_raw == "DEBUG" or nome_raw.startswith("Filt"):
                         continue
 
-                    # Transportadoras: detectar resposta no sidebar em tempo real
+                    # Transportadoras: ignorar no loop principal (processadas em _processar_fretes_pendentes)
                     transportadoras_tels = set(t["numero"] for t in TRANSPORTADORAS) | {self.TRANSPORTADORA_FOB}
                     if telefone in transportadoras_tels:
-                        if texto and nao_lida and self.fretes_pendentes:
-                            # Só processa se o texto da sidebar mudou (evita re-detecção a cada ciclo)
-                            texto_anterior = self._ultimo_texto_transportadora.get(telefone, "")
-                            if texto != texto_anterior:
-                                self._ultimo_texto_transportadora[telefone] = texto
-                                resposta_id = self._match_transportadora_resposta(telefone, texto)
-                                if resposta_id:
-                                    print(f"  [{c}] {safe(nome_raw)}: resposta de frete detectada (CPF: {resposta_id})", flush=True)
-                                    await self._processar_resposta_transportadora(nome_raw, telefone, texto)
+                        if c % 30 == 0:
+                            print(f"  [{c} SKIP] {safe(nome_raw)}: transportadora ignorada no loop principal")
                         continue
 
                     # Dedup intra-ciclo: chats duplicados (ex: role="row" aninhado)
@@ -632,8 +616,8 @@ class WhatsAppBot:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto já processado ({agora-ult_visto:.0f}s atrás)")
                             continue
 
-                    # Guarda forte: se bot enviou msg nos ultimos 15s, ignora (evita loop propria msg)
-                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 15:
+                    # Guarda forte: se bot enviou msg nos ultimos 8s, ignora (evita loop propria msg)
+                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 8:
                         if c % 30 == 0:
                             print(f"  [{c} SKIP] {safe(nome_raw)}: envio recente ({agora-self.ultimo_envio.get(telefone,0):.1f}s)")
                         continue
@@ -1358,9 +1342,9 @@ class WhatsAppBot:
             () => {
                 const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
                 if (!painel) return '';
-                const msgs = painel.querySelectorAll(':scope > div');
+                const divs = painel.querySelectorAll(':scope .message-in, :scope .message-out');
                 const todas = [];
-                for (const el of msgs) {
+                for (const el of divs) {
                     const spans = el.querySelectorAll('span[dir="ltr"], span[dir="auto"]');
                     let textoCompleto = '';
                     for (const s of spans) {
@@ -1440,15 +1424,7 @@ class WhatsAppBot:
             "transportadoras": transportadoras_reg,
             "status": "enviado",
         }
-        await self.enviar_para_cliente(telefone,
-            f"Consultando fretes... (CPF: {request_id})")
-        # Envia para transportadoras A/B via sidebar
-        for t in TRANSPORTADORAS:
-            await self.solicitar_frete_transportadora(t, produto, ci, request_id)
-        # Envia para FOB via page.goto (pode nao estar na sidebar)
-        await self._enviar_fob_msg(produto, ci, request_id)
-        # Captura texto_antes APOS enviar (ignorar a propria solicitacao ao ler respostas)
-        await asyncio.sleep(1)
+        # Captura texto_antes de cada transportadora ANTES de enviar (para ignorar msgs antigas)
         for nome, reg in list(transportadoras_reg.items()):
             async with self.sidebar_lock:
                 if await self._abrir_chat_sidebar(telefone=reg["telefone"]):
@@ -1456,6 +1432,13 @@ class WhatsAppBot:
                     msg_atual = await self._ler_msg_anterior_usuario()
                     if msg_atual:
                         self.fretes_pendentes[request_id]["transportadoras"][nome]["texto_antes"] = msg_atual
+        await self.enviar_para_cliente(telefone,
+            f"Consultando fretes... (CPF: {request_id})")
+        # Envia para transportadoras A/B via sidebar
+        for t in TRANSPORTADORAS:
+            await self.solicitar_frete_transportadora(t, produto, ci, request_id)
+        # Envia para FOB via page.goto (pode nao estar na sidebar)
+        await self._enviar_fob_msg(produto, ci, request_id)
 
     async def _enviar_fob_msg(self, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
@@ -1580,172 +1563,6 @@ class WhatsAppBot:
         await self.enviar_para_cliente(telefone,
             f"Consultando frete FOB... (CPF: {request_id})")
         await self._enviar_fob_msg(produto, ci, request_id)
-        # Captura texto_antes APOS enviar a solicitacao, para ignorar a propria mensagem
-        await asyncio.sleep(1)
-        async with self.sidebar_lock:
-            # Verifica se ja esta no chat FOB (evita reabrir e abrir perfil)
-            header_atual = await self._ler_header_chat()
-            header_digits = re.sub(r"\D", "", header_atual or "")
-            ja_no_chat = bool(header_digits and (
-                self.TRANSPORTADORA_FOB in header_digits or header_digits in self.TRANSPORTADORA_FOB
-            ))
-            if not ja_no_chat:
-                if self.mapa_contatos and self.TRANSPORTADORA_FOB in self.mapa_contatos.values():
-                    nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
-                    await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
-                else:
-                    await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
-                await asyncio.sleep(0.5)
-                # Fecha perfil se tiver aberto
-                header_atual = await self._ler_header_chat()
-                if not header_atual or "Dados do perfil" in header_atual:
-                    await self.page.keyboard.press("Escape")
-                    await asyncio.sleep(0.3)
-            msg_atual = await self._ler_msg_anterior_usuario()
-            if msg_atual:
-                self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["texto_antes"] = msg_atual
-            # Volta para o chat do cliente para nao deixar sidebar presa na transportadora
-            if nome_sidebar:
-                await self._abrir_chat_sidebar(nome=nome_sidebar, telefone=telefone)
-            else:
-                await self._abrir_chat_sidebar(telefone=telefone)
-
-    def _match_transportadora_resposta(self, telefone: str, texto_sidebar: str) -> str | None:
-        for req_id, req in list(self.fretes_pendentes.items()):
-            if req["status"] != "enviado":
-                continue
-            for trans_nome, reg in list(req["transportadoras"].items()):
-                if reg["respondido"]:
-                    continue
-                if reg["telefone"] == telefone and req_id in texto_sidebar:
-                    return req_id
-        return None
-
-    async def _processar_resposta_transportadora(self, nome: str, telefone: str, texto_sidebar: str):
-        req_id = self._match_transportadora_resposta(telefone, texto_sidebar)
-        if not req_id:
-            return
-        req = self.fretes_pendentes[req_id]
-        trans_nome = next((n for n, r in req["transportadoras"].items() if r["telefone"] == telefone), telefone)
-        reg = req["transportadoras"].get(trans_nome) or next(
-            (r for r in req["transportadoras"].values() if r["telefone"] == telefone), None)
-        if not reg:
-            return
-        async with self.sidebar_lock:
-            ok = await self._abrir_chat_sidebar(telefone=telefone)
-            if not ok:
-                return
-            await asyncio.sleep(1.5)
-            header_atual = await self._ler_header_chat()
-            if not header_atual or "Dados do perfil" in header_atual:
-                await self.page.keyboard.press("Escape")
-                await asyncio.sleep(0.5)
-            resp = await self._ler_msg_anterior_usuario()
-            tel_cliente = req["telefone"]
-            nome_sidebar_cliente = req.get("nome_sidebar", "")
-            if nome_sidebar_cliente:
-                await self._abrir_chat_sidebar(nome=nome_sidebar_cliente, telefone=tel_cliente)
-            else:
-                await self._abrir_chat_sidebar(telefone=tel_cliente)
-        if not resp:
-            print(f"  [frete] {trans_nome}: resp vazia (chat pode estar sem mensagens visiveis)", flush=True)
-            return
-        if req_id not in resp:
-            print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem completa", flush=True)
-            return
-        # Guarda: texto igual ao texto_antes (bot's own message ainda aparece no sidebar)
-        if resp == reg.get("texto_antes", ""):
-            print(f"  [frete] {trans_nome}: mesmo texto da solicitacao, ignorado", flush=True)
-            return
-        # Guarda: muito cedo (<10s) após envio — provável falso positivo da propria mensagem
-        if time.time() - reg.get("enviado_em", 0) < 10:
-            print(f"  [frete] {trans_nome}: ignorado (<10s apos envio)", flush=True)
-            return
-        dedup_key = f"{req_id}|{telefone}|{resp}"
-        if dedup_key in self._respostas_frete_vistas:
-            return
-        self._respostas_frete_vistas.add(dedup_key)
-        if resp.startswith("SOLICITAÇÃO DE COTAÇÃO DE FRETE"):
-            return
-        print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
-        try:
-            valor = self.extrair_valor_frete(resp)
-            prazo = self.extrair_prazo(resp)
-            prot_transp = self.extrair_protocolo_transportadora(resp)
-            print(f"  [frete] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
-            incompleto = (valor <= 0) or (prazo is None)
-            if incompleto:
-                reg["tentativas"] = reg.get("tentativas", 0) + 1
-                if reg["tentativas"] >= 3:
-                    print(f"  [frete] Resposta (CPF: {req_id}) incompleta apos {reg['tentativas']} tentativas, encaminhando mesmo assim", flush=True)
-                else:
-                    print(f"  [frete] Resposta (CPF: {req_id}) incompleta (tentativa {reg['tentativas']}/3), reenviando solicitacao...", flush=True)
-                    cliente_info = req.get("cliente_info", {})
-                    await self._enviar_fob_msg(req["produto"], cliente_info, req_id)
-                    return
-            reg["respondido"] = True
-            if reg.get("cot_id"):
-                atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-            msg_cliente = f"Frete {trans_nome} (CPF: {req_id}):\n"
-            if valor > 0:
-                msg_cliente += f"Valor: R$ {valor:.2f}\n"
-            else:
-                msg_cliente += f"Valor: {resp}\n"
-            msg_cliente += f"Prazo: {prazo or 'a confirmar'}\n"
-            if prot_transp:
-                msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
-            if valor > 0:
-                msg_cliente += f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n"
-            msg_cliente += f"\nDeseja confirmar o pedido?"
-            ok = await self.enviar_para_cliente(tel_cliente, msg_cliente, nome_sidebar_cliente)
-            if not ok:
-                print(f"  [frete] sidebar falhou para {tel_cliente}, tentando page.goto...", flush=True)
-                try:
-                    url_cliente = f"https://web.whatsapp.com/send/?phone={tel_cliente}"
-                    await self.page.goto(url_cliente, timeout=20000)
-                    await asyncio.sleep(2)
-                    caixa = await self._aguardar_input(10)
-                    if caixa:
-                        try:
-                            await caixa.fill(msg_cliente)
-                        except Exception:
-                            await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                            await self.page.keyboard.type(msg_cliente, delay=20)
-                        await self._clicar_enviar(usar_enter=True)
-                        print(f"  [frete] Resposta enviada via goto para {tel_cliente}", flush=True)
-                        ok = True
-                    else:
-                        print(f"  [frete] Input não encontrado para {tel_cliente}", flush=True)
-                except Exception as e:
-                    print(f"  [frete] Erro page.goto para {tel_cliente}: {safe(str(e)[:60])}", flush=True)
-            if not ok:
-                print(f"  [frete] Falha ao enviar resposta ao cliente {tel_cliente}", flush=True)
-            atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
-            xlsx_path = req.get("xlsx_path")
-            if xlsx_path and os.path.exists(xlsx_path):
-                try:
-                    from openpyxl import load_workbook
-                    wb = load_workbook(xlsx_path)
-                    ws = wb.active
-                    for row in ws.iter_rows(min_row=2, max_col=2):
-                        campo = row[0].value
-                        if campo == "STATUS":
-                            row[1].value = "Cotado"
-                        elif campo == "VALOR DO FRETE FOB" and valor > 0:
-                            row[1].value = f"R$ {valor:.2f}"
-                        elif campo == "PROTOCOLO TRANSPORTADORA" and prot_transp:
-                            row[1].value = prot_transp
-                        elif campo == "PRAZO DE ENTREGA" and prazo:
-                            row[1].value = prazo
-                    wb.save(xlsx_path)
-                    print(f"  -> Status atualizado para 'Cotado' em {os.path.basename(xlsx_path)}", flush=True)
-                except Exception as e2:
-                    print(f"  [frete] Erro ao atualizar xlsx: {safe(str(e2)[:60])}", flush=True)
-            print(f"  [frete] Resposta {trans_nome} encaminhada ao cliente", flush=True)
-        except Exception as e:
-            print(f"  [frete] Erro ao processar resposta {trans_nome}: {safe(str(e)[:100])}", flush=True)
-            import traceback
-            traceback.print_exc()
 
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
@@ -1757,17 +1574,127 @@ class WhatsAppBot:
                 if reg["respondido"]:
                     continue
                 tel = reg["telefone"]
+                # Pula transportadoras com número placeholder
                 if tel in ("555199999991", "555199999992"):
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
-                enviado_em = reg.get("enviado_em", 0)
-                if time.time() - enviado_em > 1800:
-                    reg["respondido"] = True
-                    print(f"  [frete] {trans_nome} ({tel}) timeout 30min, notificando cliente", flush=True)
-                    await self.enviar_para_cliente(req["telefone"],
-                        f"Não recebi resposta da transportadora {trans_nome} para seu frete. Entrarei em contato em breve.",
-                        req.get("nome_sidebar", ""))
+                # Tenta abrir por nome mapeado primeiro (mais confiável que telefone)
+                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
+                async with self.sidebar_lock:
+                    if nome_trans:
+                        ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
+                    else:
+                        ok = await self._abrir_chat_sidebar(telefone=tel)
+                    if not ok:
+                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
+                        continue
+                    await asyncio.sleep(1.5)
+                    header_atual = await self._ler_header_chat()
+                    if header_atual:
+                        header_digits = re.sub(r"\D", "", header_atual)
+                        if header_digits and tel not in header_digits and header_digits not in tel:
+                            print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
+                            continue
+                    resp = await self._ler_msg_anterior_usuario()
+                if not resp:
                     continue
+                # Se o texto não mudou, ainda sem resposta nova
+                if resp == reg["texto_antes"]:
+                    continue
+                # Dedup entre ciclos (so add se o req_id realmente corresponder)
+                dedup_key = f"{req_id}|{tel}|{resp}"
+                if dedup_key in self._respostas_frete_vistas:
+                    continue
+                if req_id not in resp:
+                    print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
+                    self._respostas_frete_vistas.add(dedup_key)
+                    continue
+                self._respostas_frete_vistas.add(dedup_key)
+                print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
+                try:
+                    valor = self.extrair_valor_frete(resp)
+                    prazo = self.extrair_prazo(resp)
+                    prot_transp = self.extrair_protocolo_transportadora(resp)
+                    print(f"  [frete] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
+
+                    incompleto = (valor <= 0) or (prazo is None) or (prot_transp is None)
+                    if incompleto:
+                        reg["tentativas"] = reg.get("tentativas", 0) + 1
+                        if reg["tentativas"] >= 3:
+                            print(f"  [frete] Resposta (CPF: {req_id}) incompleta apos {reg['tentativas']} tentativas, encaminhando mesmo assim", flush=True)
+                        else:
+                            print(f"  [frete] Resposta (CPF: {req_id}) incompleta (tentativa {reg['tentativas']}/3), reenviando solicitacao...", flush=True)
+                            cliente_info = req.get("cliente_info", {})
+                            await self._enviar_fob_msg(req["produto"], cliente_info, req_id)
+                            continue
+
+                    reg["respondido"] = True
+                    if reg.get("cot_id"):
+                        atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+                    msg_cliente = (
+                        f"Frete {trans_nome} (CPF: {req_id}):\n"
+                    )
+                    if valor > 0:
+                        msg_cliente += f"Valor: R$ {valor:.2f}\n"
+                    else:
+                        msg_cliente += f"Valor: {resp}\n"
+                    msg_cliente += f"Prazo: {prazo or 'a confirmar'}\n"
+                    if prot_transp:
+                        msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
+                    if valor > 0:
+                        msg_cliente += f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n"
+                    msg_cliente += f"\nDeseja confirmar o pedido?"
+                    tel_cliente = req["telefone"]
+                    nome_sidebar_cliente = req.get("nome_sidebar", "")
+                    ok = await self.enviar_para_cliente(tel_cliente, msg_cliente, nome_sidebar_cliente)
+                    if not ok:
+                        print(f"  [frete] sidebar falhou para {tel_cliente}, tentando page.goto...", flush=True)
+                        try:
+                            url_cliente = f"https://web.whatsapp.com/send/?phone={tel_cliente}"
+                            await self.page.goto(url_cliente, timeout=20000)
+                            await asyncio.sleep(2)
+                            caixa = await self._aguardar_input(10)
+                            if caixa:
+                                try:
+                                    await caixa.fill(msg_cliente)
+                                except Exception:
+                                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                                    await self.page.keyboard.type(msg_cliente, delay=20)
+                                await self._clicar_enviar(usar_enter=True)
+                                print(f"  [frete] Resposta enviada via goto para {tel_cliente}", flush=True)
+                                ok = True
+                            else:
+                                print(f"  [frete] Input não encontrado para {tel_cliente}", flush=True)
+                        except Exception as e:
+                            print(f"  [frete] Erro page.goto para {tel_cliente}: {safe(str(e)[:60])}", flush=True)
+                    if not ok:
+                        print(f"  [frete] Falha ao enviar resposta ao cliente {tel_cliente}", flush=True)
+                    atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+                    xlsx_path = req.get("xlsx_path")
+                    if xlsx_path and os.path.exists(xlsx_path):
+                        try:
+                            from openpyxl import load_workbook
+                            wb = load_workbook(xlsx_path)
+                            ws = wb.active
+                            for row in ws.iter_rows(min_row=2, max_col=2):
+                                campo = row[0].value
+                                if campo == "STATUS":
+                                    row[1].value = "Cotado"
+                                elif campo == "VALOR DO FRETE FOB" and valor > 0:
+                                    row[1].value = f"R$ {valor:.2f}"
+                                elif campo == "PROTOCOLO TRANSPORTADORA" and prot_transp:
+                                    row[1].value = prot_transp
+                                elif campo == "PRAZO DE ENTREGA" and prazo:
+                                    row[1].value = prazo
+                            wb.save(xlsx_path)
+                            print(f"  -> Status atualizado para 'Cotado' em {os.path.basename(xlsx_path)}", flush=True)
+                        except Exception as e2:
+                            print(f"  [frete] Erro ao atualizar xlsx: {safe(str(e2)[:60])}", flush=True)
+                    print(f"  [frete] Resposta {trans_nome} encaminhada ao cliente", flush=True)
+                except Exception as e:
+                    print(f"  [frete] Erro ao processar resposta {trans_nome}: {safe(str(e)[:100])}", flush=True)
+                    import traceback
+                    traceback.print_exc()
             if all(t["respondido"] for t in req["transportadoras"].values()):
                 self.fretes_pendentes.pop(req_id, None)
 
@@ -1785,7 +1712,7 @@ class WhatsAppBot:
                 return
 
             # BOT-DEDUP: se o bot enviou msg nos ultimos 10s e o conteudo parece eco do bot, ignora
-            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 15:
+            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 10:
                 ultimo_texto = self.ultimo_envio_texto.get(telefone, "")
                 if ultimo_texto and msg_texto:
                     msg_norm = re.sub(r'\s+', ' ', self._strip_emoji(msg_texto)).strip().lower()
@@ -2175,10 +2102,8 @@ class WhatsAppBot:
                 estado = self.apresentacao_menu.get(telefone)
                 if not estado:
                     self.apresentacao_menu.pop(telefone, None)
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
-                    if ok:
-                        print(f"  -> Menu reiniciado apos perda de estado para {safe(telefone)}", flush=True)
                     return
                 if msg_texto.strip().isdigit():
                     n = int(msg_texto.strip())
@@ -2200,10 +2125,8 @@ class WhatsAppBot:
                 estado = self.apresentacao_submenu.get(telefone)
                 if not estado:
                     self.apresentacao_submenu.pop(telefone, None)
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
-                    if ok:
-                        print(f"  -> Menu reiniciado apos perda de estado submenu para {safe(telefone)}", flush=True)
                     return
                 alpha = {"a": 1, "b": 3, "c": 4, "d": 5}
                 opt = msg_texto.strip().lower()
@@ -2227,10 +2150,7 @@ class WhatsAppBot:
                     return
                 ctx = self.continuar_submenu.pop(telefone, None)
                 if not ctx:
-                    self.processando.pop(telefone, None)
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
-                    if ok:
-                        print(f"  -> Menu reiniciado apos perda de estado submenu_continuar para {safe(telefone)}", flush=True)
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
                     return
                 if opt in ("f", "1", "sim"):
                     produto = produto_por_id(ctx["produto_id"])
