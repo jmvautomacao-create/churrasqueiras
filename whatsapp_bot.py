@@ -1424,6 +1424,14 @@ class WhatsAppBot:
             "transportadoras": transportadoras_reg,
             "status": "enviado",
         }
+        # Captura texto_antes de cada transportadora ANTES de enviar (para ignorar msgs antigas)
+        for nome, reg in list(transportadoras_reg.items()):
+            async with self.sidebar_lock:
+                if await self._abrir_chat_sidebar(telefone=reg["telefone"]):
+                    await asyncio.sleep(0.5)
+                    msg_atual = await self._ler_msg_anterior_usuario()
+                    if msg_atual:
+                        self.fretes_pendentes[request_id]["transportadoras"][nome]["texto_antes"] = msg_atual
         await self.enviar_para_cliente(telefone,
             f"Consultando fretes... (CPF: {request_id})")
         # Envia para transportadoras A/B via sidebar
@@ -1460,7 +1468,6 @@ class WhatsAppBot:
             if request_id in self.fretes_pendentes:
                 for t in self.fretes_pendentes[request_id]["transportadoras"].values():
                     if t["telefone"] == self.TRANSPORTADORA_FOB:
-                        t["texto_antes"] = msg
                         t["_inicializado"] = True
             return
         # Fallback: page.goto (se FOB não estiver na sidebar)
@@ -1483,7 +1490,6 @@ class WhatsAppBot:
                 if request_id in self.fretes_pendentes:
                     for t in self.fretes_pendentes[request_id]["transportadoras"].values():
                         if t["telefone"] == self.TRANSPORTADORA_FOB:
-                            t["texto_antes"] = msg
                             t["_inicializado"] = True
             else:
                 print(f"  [frete] Input não encontrado após navegação FOB", flush=True)
@@ -1591,8 +1597,15 @@ class WhatsAppBot:
                 if dedup_key in self._respostas_frete_vistas:
                     continue
                 if req_id not in resp:
-                    print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
-                    continue
+                    parece_cotacao = bool(re.search(
+                        r"(R\s*\$\s*[\d.,]+|VALOR DO FRETE|PRAZO.*(?:dia|úteis)|FRETE.*R\$)",
+                        resp, re.IGNORECASE
+                    ))
+                    if not parece_cotacao:
+                        print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado e não parece cotação", flush=True)
+                        self._respostas_frete_vistas.add(dedup_key)
+                        continue
+                    print(f"  [frete] Resposta (CPF: {req_id}) aceita como cotação mesmo sem CPF no texto", flush=True)
                 self._respostas_frete_vistas.add(dedup_key)
                 print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
                 try:
