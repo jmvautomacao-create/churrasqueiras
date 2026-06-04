@@ -616,8 +616,8 @@ class WhatsAppBot:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto já processado ({agora-ult_visto:.0f}s atrás)")
                             continue
 
-                    # Guarda forte: se bot enviou msg nos ultimos 8s, ignora (evita loop propria msg)
-                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 8:
+                    # Guarda forte: se bot enviou msg nos ultimos 15s, ignora (evita loop propria msg)
+                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 15:
                         if c % 30 == 0:
                             print(f"  [{c} SKIP] {safe(nome_raw)}: envio recente ({agora-self.ultimo_envio.get(telefone,0):.1f}s)")
                         continue
@@ -1424,14 +1424,6 @@ class WhatsAppBot:
             "transportadoras": transportadoras_reg,
             "status": "enviado",
         }
-        # Captura texto_antes de cada transportadora ANTES de enviar (para ignorar msgs antigas)
-        for nome, reg in list(transportadoras_reg.items()):
-            async with self.sidebar_lock:
-                if await self._abrir_chat_sidebar(telefone=reg["telefone"]):
-                    await asyncio.sleep(0.5)
-                    msg_atual = await self._ler_msg_anterior_usuario()
-                    if msg_atual:
-                        self.fretes_pendentes[request_id]["transportadoras"][nome]["texto_antes"] = msg_atual
         await self.enviar_para_cliente(telefone,
             f"Consultando fretes... (CPF: {request_id})")
         # Envia para transportadoras A/B via sidebar
@@ -1439,6 +1431,15 @@ class WhatsAppBot:
             await self.solicitar_frete_transportadora(t, produto, ci, request_id)
         # Envia para FOB via page.goto (pode nao estar na sidebar)
         await self._enviar_fob_msg(produto, ci, request_id)
+        # Captura texto_antes APOS enviar (ignorar a propria solicitacao ao ler respostas)
+        await asyncio.sleep(1)
+        for nome, reg in list(transportadoras_reg.items()):
+            async with self.sidebar_lock:
+                if await self._abrir_chat_sidebar(telefone=reg["telefone"]):
+                    await asyncio.sleep(0.5)
+                    msg_atual = await self._ler_msg_anterior_usuario()
+                    if msg_atual:
+                        self.fretes_pendentes[request_id]["transportadoras"][nome]["texto_antes"] = msg_atual
 
     async def _enviar_fob_msg(self, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
@@ -1563,6 +1564,18 @@ class WhatsAppBot:
         await self.enviar_para_cliente(telefone,
             f"Consultando frete FOB... (CPF: {request_id})")
         await self._enviar_fob_msg(produto, ci, request_id)
+        # Captura texto_antes APOS enviar a solicitacao, para ignorar a propria mensagem
+        await asyncio.sleep(1)
+        async with self.sidebar_lock:
+            nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
+            if nome_fob:
+                await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
+            else:
+                await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
+            await asyncio.sleep(0.5)
+            msg_atual = await self._ler_msg_anterior_usuario()
+            if msg_atual:
+                self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["texto_antes"] = msg_atual
 
     async def _processar_fretes_pendentes(self):
         if not self.fretes_pendentes:
@@ -1605,6 +1618,9 @@ class WhatsAppBot:
                 dedup_key = f"{req_id}|{tel}|{resp}"
                 if dedup_key in self._respostas_frete_vistas:
                     continue
+                if resp.startswith("SOLICITAÇÃO DE COTAÇÃO DE FRETE"):
+                    print(f"  [frete] Ignorando propria solicitacao (CPF: {req_id})", flush=True)
+                    continue
                 if req_id not in resp:
                     print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
                     self._respostas_frete_vistas.add(dedup_key)
@@ -1617,7 +1633,7 @@ class WhatsAppBot:
                     prot_transp = self.extrair_protocolo_transportadora(resp)
                     print(f"  [frete] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
 
-                    incompleto = (valor <= 0) or (prazo is None) or (prot_transp is None)
+                    incompleto = (valor <= 0) or (prazo is None)
                     if incompleto:
                         reg["tentativas"] = reg.get("tentativas", 0) + 1
                         if reg["tentativas"] >= 3:
@@ -1712,7 +1728,7 @@ class WhatsAppBot:
                 return
 
             # BOT-DEDUP: se o bot enviou msg nos ultimos 10s e o conteudo parece eco do bot, ignora
-            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 10:
+            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 15:
                 ultimo_texto = self.ultimo_envio_texto.get(telefone, "")
                 if ultimo_texto and msg_texto:
                     msg_norm = re.sub(r'\s+', ' ', self._strip_emoji(msg_texto)).strip().lower()
