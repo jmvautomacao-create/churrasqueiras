@@ -115,6 +115,18 @@ WhatsApp Web sidebar replaces `\n` with spaces and truncates to ~80 chars. All d
 | `fila_pendentes` | telefone | str | Telefones na fila ou em processamento |
 | `ultimo_aviso_fila` | telefone | timestamp | Throttle de aviso de posição na fila |
 
+## Freight Monitor Definitivo
+
+O monitor (`_monitorar_fretes`) roda a cada **10s** (não 3s) para reduzir overhead. A cada **60s** por transportadora ele:
+
+1. Adquire `sidebar_lock`, navega para o chat da transportadora, lê a última mensagem (`_ler_msg_anterior_usuario`)
+2. **SEMPRE volta ao chat do cliente** imediatamente após ler (mesmo em paths de erro/`continue`)
+3. Se não há resposta nova (`resp == texto_antes`), continua sem fazer nada
+
+Timeout de **30 min** sem resposta → marca como `respondido=True`, notifica o cliente.
+
+Log de throttle condicional: 1 linha a cada 30 ciclos (~5 min).
+
 ## Media Structure
 
 `media/churrasqueiras/<midia_dir>/` — each product has `folder.jpg`, optionally `*.jpg` (foto) and `*.mp4` (video).
