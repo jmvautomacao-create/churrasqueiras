@@ -63,6 +63,7 @@ class WhatsAppBot:
         self.fretes_pendentes: dict[str, dict] = {}
         self.proximo_id_frete: int = 0
         self._respostas_frete_vistas: set[str] = set()
+        self._ultima_verif_frete: dict[str, float] = {}
         self._cache_cep: dict[str, dict] = {}
         self._cache_endereco: dict[str, dict] = {}
         self.fila_mensagens: asyncio.Queue | None = None
@@ -1603,6 +1604,12 @@ class WhatsAppBot:
                 if tel in ("555199999991", "555199999992"):
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
+                # Throttle: só navega a cada 15s por transportadora
+                agora = time.time()
+                ult_verif = self._ultima_verif_frete.get(tel, 0)
+                precisa_navegar = (agora - ult_verif > 15)
+                if precisa_navegar:
+                    self._ultima_verif_frete[tel] = agora
                 # Verifica se ja esta no chat da transportadora (evita reabrir e abrir perfil)
                 nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
                 async with self.sidebar_lock:
@@ -1610,7 +1617,7 @@ class WhatsAppBot:
                     header_digits = re.sub(r"\D", "", header_atual or "")
                     ja_no_chat = bool(header_digits and (tel in header_digits or header_digits in tel))
 
-                    if not ja_no_chat:
+                    if not ja_no_chat and precisa_navegar:
                         # Navega para o chat da transportadora
                         if nome_trans:
                             ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
@@ -1626,6 +1633,9 @@ class WhatsAppBot:
                             await self.page.keyboard.press("Escape")
                             await asyncio.sleep(0.5)
                             header_atual = await self._ler_header_chat()
+                    elif not ja_no_chat and not precisa_navegar:
+                        print(f"  [frete] {trans_nome} ({tel}) navegação throttled ({(agora - ult_verif):.0f}s desde último check)", flush=True)
+                        continue
                     else:
                         await asyncio.sleep(0.3)
 
@@ -2144,8 +2154,10 @@ class WhatsAppBot:
                 estado = self.apresentacao_menu.get(telefone)
                 if not estado:
                     self.apresentacao_menu.pop(telefone, None)
-                    atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                    if ok:
+                        print(f"  -> Menu reiniciado apos perda de estado para {safe(telefone)}", flush=True)
                     return
                 if msg_texto.strip().isdigit():
                     n = int(msg_texto.strip())
@@ -2167,8 +2179,10 @@ class WhatsAppBot:
                 estado = self.apresentacao_submenu.get(telefone)
                 if not estado:
                     self.apresentacao_submenu.pop(telefone, None)
-                    atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                    if ok:
+                        print(f"  -> Menu reiniciado apos perda de estado submenu para {safe(telefone)}", flush=True)
                     return
                 alpha = {"a": 1, "b": 3, "c": 4, "d": 5}
                 opt = msg_texto.strip().lower()
@@ -2192,7 +2206,10 @@ class WhatsAppBot:
                     return
                 ctx = self.continuar_submenu.pop(telefone, None)
                 if not ctx:
-                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                    self.processando.pop(telefone, None)
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                    if ok:
+                        print(f"  -> Menu reiniciado apos perda de estado submenu_continuar para {safe(telefone)}", flush=True)
                     return
                 if opt in ("f", "1", "sim"):
                     produto = produto_por_id(ctx["produto_id"])
