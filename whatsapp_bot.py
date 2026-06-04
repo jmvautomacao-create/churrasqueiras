@@ -616,8 +616,8 @@ class WhatsAppBot:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto já processado ({agora-ult_visto:.0f}s atrás)")
                             continue
 
-                    # Guarda forte: se bot enviou msg nos ultimos 15s, ignora (evita loop propria msg)
-                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 15:
+                    # Guarda forte: se bot enviou msg nos ultimos 8s, ignora (evita loop propria msg)
+                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 8:
                         if c % 30 == 0:
                             print(f"  [{c} SKIP] {safe(nome_raw)}: envio recente ({agora-self.ultimo_envio.get(telefone,0):.1f}s)")
                         continue
@@ -1727,8 +1727,8 @@ class WhatsAppBot:
                 print(f"  -> Telefone inválido p/ {safe(remetente)}: {telefone}", flush=True)
                 return
 
-            # BOT-DEDUP: se o bot enviou msg nos ultimos 10s e o conteudo parece eco do bot, ignora
-            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 15:
+            # BOT-DEDUP: se o bot enviou msg nos ultimos 8s e o conteudo parece eco do bot, ignora
+            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 8:
                 ultimo_texto = self.ultimo_envio_texto.get(telefone, "")
                 if ultimo_texto and msg_texto:
                     msg_norm = re.sub(r'\s+', ' ', self._strip_emoji(msg_texto)).strip().lower()
@@ -2117,9 +2117,12 @@ class WhatsAppBot:
             if etapa == "apresentacao_menu":
                 estado = self.apresentacao_menu.get(telefone)
                 if not estado:
-                    self.apresentacao_menu.pop(telefone, None)
-                    atualizar_etapa_conversa(conv_id, "menu_principal")
+                    # Memória perdida no restart — reenvia o menu
+                    print(f"  -> Estado de menu perdido para {safe(remetente)}, reenviando...")
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                     self.processando.pop(telefone, None)
+                    if ok:
+                        print(f"  -> Menu reenviado para {safe(remetente)}", flush=True)
                     return
                 if msg_texto.strip().isdigit():
                     n = int(msg_texto.strip())
@@ -2140,9 +2143,13 @@ class WhatsAppBot:
             if etapa == "apresentacao_submenu":
                 estado = self.apresentacao_submenu.get(telefone)
                 if not estado:
-                    self.apresentacao_submenu.pop(telefone, None)
+                    # Memória perdida no restart — volta pro menu
+                    print(f"  -> Estado de submenu perdido para {safe(remetente)}, voltando ao menu...")
                     atualizar_etapa_conversa(conv_id, "menu_principal")
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                     self.processando.pop(telefone, None)
+                    if ok:
+                        print(f"  -> Menu reenviado para {safe(remetente)}", flush=True)
                     return
                 alpha = {"a": 1, "b": 3, "c": 4, "d": 5}
                 opt = msg_texto.strip().lower()
@@ -2166,7 +2173,12 @@ class WhatsAppBot:
                     return
                 ctx = self.continuar_submenu.pop(telefone, None)
                 if not ctx:
+                    # Memória perdida no restart — volta pro menu
                     atualizar_etapa_conversa(conv_id, "menu_principal")
+                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                    self.processando.pop(telefone, None)
+                    if ok:
+                        print(f"  -> Menu reenviado para {safe(remetente)} (submenu_continuar)", flush=True)
                     return
                 if opt in ("f", "1", "sim"):
                     produto = produto_por_id(ctx["produto_id"])
