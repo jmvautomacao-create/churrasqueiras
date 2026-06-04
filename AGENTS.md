@@ -117,15 +117,23 @@ WhatsApp Web sidebar replaces `\n` with spaces and truncates to ~80 chars. All d
 
 ## Freight Monitor Definitivo
 
-O monitor (`_monitorar_fretes`) roda a cada **10s** (não 3s) para reduzir overhead. A cada **60s** por transportadora ele:
+O monitor (`_monitorar_fretes`) roda a cada **10s** para verificar timeouts (30 min sem resposta → notifica cliente).
 
-1. Adquire `sidebar_lock`, navega para o chat da transportadora, lê a última mensagem (`_ler_msg_anterior_usuario`)
-2. **SEMPRE volta ao chat do cliente** imediatamente após ler (mesmo em paths de erro/`continue`)
-3. Se não há resposta nova (`resp == texto_antes`), continua sem fazer nada
+A detecção de respostas das transportadoras é feita **em tempo real** pelo loop principal (`escutar_mensagens`):
+- A cada ~3s, `detectar_chats()` lê a sidebar de TODOS os chats
+- Se uma transportadora tem mensagem **não lida** com o CPF do pedido no texto, o bot:
+  1. Chama `_match_transportadora_resposta()` para confirmar o match
+  2. Navega para o chat da transportadora (sidebar_lock)
+  3. Lê a mensagem completa via `_ler_msg_anterior_usuario()`
+  4. Volta ao chat do cliente imediatamente
+  5. Processa a resposta (extrai valor/prazo/protocolo)
+  6. Encaminha ao cliente
 
-Timeout de **30 min** sem resposta → marca como `respondido=True`, notifica o cliente.
-
-Log de throttle condicional: 1 linha a cada 30 ciclos (~5 min).
+Isso elimina:
+- Polling com sidebar navigation a cada 3s/10s/60s
+- Throttle perdendo respostas entre ciclos
+- Sidebar presa na transportadora
+- Log flood de "throttled"
 
 ## Media Structure
 
