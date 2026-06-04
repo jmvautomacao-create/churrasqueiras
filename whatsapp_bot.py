@@ -225,7 +225,7 @@ class WhatsAppBot:
         self.apresentacao_submenu[telefone] = {
             "conv_id": conv_id,
             "produto_id": produto["id"],
-            "apresentados": [1, 2, 3, 4, 5, 6],
+            "apresentados": [1, 3, 4, 5, 6],
             "todos_enviados": True,
         }
         atualizar_etapa_conversa(conv_id, "apresentacao_submenu")
@@ -2115,7 +2115,7 @@ class WhatsAppBot:
                     atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
                     return
-                alpha = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}
+                alpha = {"a": 1, "b": 3, "c": 4, "d": 5}
                 opt = msg_texto.strip().lower()
                 if opt in alpha:
                     n = alpha[opt]
@@ -2162,13 +2162,12 @@ class WhatsAppBot:
                 if produto:
                     opt = msg_texto.strip().lower()
                     opt_map = {"a": "folder", "1": "folder", "folder": "folder",
-                               "b": "valor", "2": "valor", "valor": "valor", "preco": "valor", "preço": "valor",
-                               "c": "foto", "3": "foto", "foto": "foto", "fotografia": "foto",
-                               "d": "video", "4": "video", "video": "video", "vídeo": "video",
-                               "e": "frete", "5": "frete", "frete": "frete", "cotacao": "frete", "cotaçao": "frete"}
+                               "b": "foto", "3": "foto", "foto": "foto", "fotografia": "foto",
+                               "c": "video", "4": "video", "video": "video", "vídeo": "video",
+                               "d": "frete", "5": "frete", "frete": "frete", "cotacao": "frete", "cotaçao": "frete"}
                     acao = opt_map.get(opt)
 
-                    if acao in ("folder", "valor", "foto", "video"):
+                    if acao in ("folder", "foto", "video"):
                         if acao == "folder":
                             await self._enviar_folder(conv_id, telefone, produto)
                         elif acao == "valor":

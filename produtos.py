@@ -43,7 +43,7 @@ def menu_interativo() -> str:
         "",
     ]
     for p in PRODUTOS:
-        linhas.append(f"  [{p['id']}] {p['nome']}")
+        linhas.append(f"  [{p['id']}] {p['nome']} - R$ {p['preco']:.2f}")
     linhas.append("")
     linhas.append("Digite o número do produto para ver as opções!")
     return "\n".join(linhas)
@@ -51,13 +51,12 @@ def menu_interativo() -> str:
 
 def submenu_produto(produto: dict) -> str:
     return (
-        f"Você escolheu: {produto['nome']}\n\n"
+        f"Você escolheu: {produto['nome']} - R$ {produto['preco']:.2f}\n\n"
         f"Escolha uma opção:\n"
         f"  [a] Ver o folder do produto\n"
-        f"  [b] Consultar o preço\n"
-        f"  [c] Enviar uma foto\n"
-        f"  [d] Enviar um vídeo\n"
-        f"  [e] Solicitar cotação de frete\n\n"
+        f"  [b] Enviar uma foto\n"
+        f"  [c] Enviar um vídeo\n"
+        f"  [d] Solicitar cotação de frete\n\n"
         f"Digite a letra da opção desejada."
     )
 
