@@ -478,10 +478,6 @@ class WhatsAppBot:
         while True:
             try:
                 if self.fretes_pendentes:
-                    for rid, r in self.fretes_pendentes.items():
-                        pendentes = [t for t, v in r["transportadoras"].items() if not v["respondido"]]
-                        if pendentes:
-                            print(f"  [frete monitor] req_id={rid} pendentes={pendentes}", flush=True)
                     await self._processar_fretes_pendentes()
                 await self._verificar_pagamentos_pendentes()
                 await asyncio.sleep(3)
@@ -620,8 +616,8 @@ class WhatsAppBot:
                                 print(f"  [{c} SKIP] {safe(nome_raw)}: texto já processado ({agora-ult_visto:.0f}s atrás)")
                             continue
 
-                    # Guarda forte: se bot enviou msg nos ultimos 8s, ignora (evita loop propria msg)
-                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 8:
+                    # Guarda forte: se bot enviou msg nos ultimos 15s, ignora (evita loop propria msg)
+                    if texto and agora - self.ultimo_envio.get(telefone, 0) < 15:
                         if c % 30 == 0:
                             print(f"  [{c} SKIP] {safe(nome_raw)}: envio recente ({agora-self.ultimo_envio.get(telefone,0):.1f}s)")
                         continue
@@ -1571,20 +1567,17 @@ class WhatsAppBot:
         # Captura texto_antes APOS enviar a solicitacao, para ignorar a propria mensagem
         await asyncio.sleep(1)
         async with self.sidebar_lock:
-            # Navega direto para a transportadora (page.goto abre sempre a conversa, evita perfil)
-            try:
-                url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
-                await self.page.goto(url_fob, timeout=20000)
-                await asyncio.sleep(1.5)
-            except Exception as e:
-                print(f"  [frete] page.goto falhou para FOB: {safe(str(e)[:60])}", flush=True)
-                # Fallback: tenta sidebar
+            if self.mapa_contatos and self.TRANSPORTADORA_FOB in self.mapa_contatos.values():
                 nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
-                if nome_fob:
-                    await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
-                else:
-                    await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
+                await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
+            else:
+                await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
             await asyncio.sleep(0.5)
+            # Fecha perfil se tiver aberto
+            header_atual = await self._ler_header_chat()
+            if not header_atual or "Dados do perfil" in header_atual:
+                await self.page.keyboard.press("Escape")
+                await asyncio.sleep(0.3)
             msg_atual = await self._ler_msg_anterior_usuario()
             if msg_atual:
                 self.fretes_pendentes[request_id]["transportadoras"]["FOB"]["texto_antes"] = msg_atual
@@ -1603,34 +1596,30 @@ class WhatsAppBot:
                 if tel in ("555199999991", "555199999992"):
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
-                # Navega direto via page.goto (sempre abre a conversa, evita perfil)
+                # Tenta abrir por nome mapeado primeiro (mais confiável que telefone)
+                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
                 async with self.sidebar_lock:
-                    try:
-                        url_transp = f"https://web.whatsapp.com/send/?phone={tel}"
-                        await self.page.goto(url_transp, timeout=20000)
-                        await asyncio.sleep(1.5)
-                    except Exception as e:
-                        print(f"  [frete] page.goto falhou para {trans_nome} ({tel}): {safe(str(e)[:60])}, tentando sidebar...", flush=True)
-                        nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
-                        if nome_trans:
-                            await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
-                        else:
-                            await self._abrir_chat_sidebar(telefone=tel)
-                    # Fecha qualquer painel que tenha aberto (ex: perfil)
-                    await self.page.keyboard.press("Escape")
-                    await asyncio.sleep(0.3)
+                    if nome_trans:
+                        ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
+                    else:
+                        ok = await self._abrir_chat_sidebar(telefone=tel)
+                    if not ok:
+                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
+                        continue
+                    await asyncio.sleep(1.5)
+                    # Se perfil aberto, fecha com Escape para poder ler as mensagens
                     header_atual = await self._ler_header_chat()
-                    # Só valida dígitos se header não for vazio
+                    if not header_atual or "Dados do perfil" in header_atual:
+                        print(f"  [frete] Perfil aberto para {trans_nome}, Escape...", flush=True)
+                        await self.page.keyboard.press("Escape")
+                        await asyncio.sleep(0.5)
+                        header_atual = await self._ler_header_chat()
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
                         if header_digits and tel not in header_digits and header_digits not in tel:
-                            if "Dados do perfil" not in header_atual:
-                                print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
-                                continue
+                            print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
+                            continue
                     resp = await self._ler_msg_anterior_usuario()
-                    print(f"  [frete] {trans_nome}: header='{safe(header_atual)}' resp_len={len(resp) if resp else 0} req_id={req_id}", flush=True)
-                    if resp:
-                        print(f"  [frete] resp_preview={safe(resp[:120])}", flush=True)
                 if not resp:
                     continue
                 # Se o texto não mudou, ainda sem resposta nova
@@ -1643,11 +1632,7 @@ class WhatsAppBot:
                 if resp.startswith("SOLICITAÇÃO DE COTAÇÃO DE FRETE"):
                     print(f"  [frete] Ignorando propria solicitacao (CPF: {req_id})", flush=True)
                     continue
-                # Normaliza dígitos para comparacao do req_id (CPF pode ter pontuacao)
-                req_digits = re.sub(r"\D", "", req_id)
-                resp_digits_only = re.sub(r"\D", "", resp)
-                req_encontrado = (req_id in resp) or (req_digits and req_digits in resp_digits_only)
-                if not req_encontrado:
+                if req_id not in resp:
                     print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
                     self._respostas_frete_vistas.add(dedup_key)
                     continue
@@ -1753,8 +1738,8 @@ class WhatsAppBot:
                 print(f"  -> Telefone inválido p/ {safe(remetente)}: {telefone}", flush=True)
                 return
 
-            # BOT-DEDUP: se o bot enviou msg nos ultimos 8s e o conteudo parece eco do bot, ignora
-            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 8:
+            # BOT-DEDUP: se o bot enviou msg nos ultimos 10s e o conteudo parece eco do bot, ignora
+            if telefone and time.time() - self.ultimo_envio_sucesso.get(telefone, 0) < 15:
                 ultimo_texto = self.ultimo_envio_texto.get(telefone, "")
                 if ultimo_texto and msg_texto:
                     msg_norm = re.sub(r'\s+', ' ', self._strip_emoji(msg_texto)).strip().lower()
@@ -2143,12 +2128,9 @@ class WhatsAppBot:
             if etapa == "apresentacao_menu":
                 estado = self.apresentacao_menu.get(telefone)
                 if not estado:
-                    # Memória perdida no restart — reenvia o menu
-                    print(f"  -> Estado de menu perdido para {safe(remetente)}, reenviando...")
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
+                    self.apresentacao_menu.pop(telefone, None)
+                    atualizar_etapa_conversa(conv_id, "menu_principal")
                     self.processando.pop(telefone, None)
-                    if ok:
-                        print(f"  -> Menu reenviado para {safe(remetente)}", flush=True)
                     return
                 if msg_texto.strip().isdigit():
                     n = int(msg_texto.strip())
@@ -2169,13 +2151,9 @@ class WhatsAppBot:
             if etapa == "apresentacao_submenu":
                 estado = self.apresentacao_submenu.get(telefone)
                 if not estado:
-                    # Memória perdida no restart — volta pro menu
-                    print(f"  -> Estado de submenu perdido para {safe(remetente)}, voltando ao menu...")
+                    self.apresentacao_submenu.pop(telefone, None)
                     atualizar_etapa_conversa(conv_id, "menu_principal")
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
                     self.processando.pop(telefone, None)
-                    if ok:
-                        print(f"  -> Menu reenviado para {safe(remetente)}", flush=True)
                     return
                 alpha = {"a": 1, "b": 3, "c": 4, "d": 5}
                 opt = msg_texto.strip().lower()
@@ -2199,12 +2177,7 @@ class WhatsAppBot:
                     return
                 ctx = self.continuar_submenu.pop(telefone, None)
                 if not ctx:
-                    # Memória perdida no restart — volta pro menu
                     atualizar_etapa_conversa(conv_id, "menu_principal")
-                    ok = await self._iniciar_apresentacao_menu(telefone, conv_id, nome_sidebar)
-                    self.processando.pop(telefone, None)
-                    if ok:
-                        print(f"  -> Menu reenviado para {safe(remetente)} (submenu_continuar)", flush=True)
                     return
                 if opt in ("f", "1", "sim"):
                     produto = produto_por_id(ctx["produto_id"])
