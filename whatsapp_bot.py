@@ -478,6 +478,10 @@ class WhatsAppBot:
         while True:
             try:
                 if self.fretes_pendentes:
+                    for rid, r in self.fretes_pendentes.items():
+                        pendentes = [t for t, v in r["transportadoras"].items() if not v["respondido"]]
+                        if pendentes:
+                            print(f"  [frete monitor] req_id={rid} pendentes={pendentes}", flush=True)
                     await self._processar_fretes_pendentes()
                 await self._verificar_pagamentos_pendentes()
                 await asyncio.sleep(3)
@@ -1599,8 +1603,16 @@ class WhatsAppBot:
                     else:
                         ok = await self._abrir_chat_sidebar(telefone=tel)
                     if not ok:
-                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
-                        continue
+                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel}) na sidebar, tentando page.goto...", flush=True)
+                        # Fallback: navega direto via URL
+                        try:
+                            url_transp = f"https://web.whatsapp.com/send/?phone={tel}"
+                            await self.page.goto(url_transp, timeout=20000)
+                            await asyncio.sleep(2)
+                            ok = True
+                        except Exception as e:
+                            print(f"  [frete] page.goto falhou para {tel}: {safe(str(e)[:60])}", flush=True)
+                            continue
                     await asyncio.sleep(1.5)
                     header_atual = await self._ler_header_chat()
                     if header_atual:
@@ -1609,6 +1621,9 @@ class WhatsAppBot:
                             print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
                             continue
                     resp = await self._ler_msg_anterior_usuario()
+                    print(f"  [frete] {trans_nome}: header='{safe(header_atual)}' resp_len={len(resp) if resp else 0} req_id={req_id}", flush=True)
+                    if resp:
+                        print(f"  [frete] resp_preview={safe(resp[:120])}", flush=True)
                 if not resp:
                     continue
                 # Se o texto não mudou, ainda sem resposta nova
@@ -1621,7 +1636,11 @@ class WhatsAppBot:
                 if resp.startswith("SOLICITAÇÃO DE COTAÇÃO DE FRETE"):
                     print(f"  [frete] Ignorando propria solicitacao (CPF: {req_id})", flush=True)
                     continue
-                if req_id not in resp:
+                # Normaliza dígitos para comparacao do req_id (CPF pode ter pontuacao)
+                req_digits = re.sub(r"\D", "", req_id)
+                resp_digits_only = re.sub(r"\D", "", resp)
+                req_encontrado = (req_id in resp) or (req_digits and req_digits in resp_digits_only)
+                if not req_encontrado:
                     print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
                     self._respostas_frete_vistas.add(dedup_key)
                     continue
