@@ -1571,11 +1571,19 @@ class WhatsAppBot:
         # Captura texto_antes APOS enviar a solicitacao, para ignorar a propria mensagem
         await asyncio.sleep(1)
         async with self.sidebar_lock:
-            nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
-            if nome_fob:
-                await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
-            else:
-                await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
+            # Navega direto para a transportadora (page.goto abre sempre a conversa, evita perfil)
+            try:
+                url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
+                await self.page.goto(url_fob, timeout=20000)
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                print(f"  [frete] page.goto falhou para FOB: {safe(str(e)[:60])}", flush=True)
+                # Fallback: tenta sidebar
+                nome_fob = next((n for n, t in self.mapa_contatos.items() if t == self.TRANSPORTADORA_FOB), "")
+                if nome_fob:
+                    await self._abrir_chat_sidebar(nome=nome_fob, telefone=self.TRANSPORTADORA_FOB)
+                else:
+                    await self._abrir_chat_sidebar(telefone=self.TRANSPORTADORA_FOB)
             await asyncio.sleep(0.5)
             msg_atual = await self._ler_msg_anterior_usuario()
             if msg_atual:
@@ -1595,42 +1603,23 @@ class WhatsAppBot:
                 if tel in ("555199999991", "555199999992"):
                     print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
                     continue
-                # Tenta abrir por nome mapeado primeiro (mais confiável que telefone)
-                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
+                # Navega direto via page.goto (sempre abre a conversa, evita perfil)
                 async with self.sidebar_lock:
-                    if nome_trans:
-                        ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
-                    else:
-                        ok = await self._abrir_chat_sidebar(telefone=tel)
-                    if not ok:
-                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel}) na sidebar, tentando page.goto...", flush=True)
-                        # Fallback: navega direto via URL
-                        try:
-                            url_transp = f"https://web.whatsapp.com/send/?phone={tel}"
-                            await self.page.goto(url_transp, timeout=20000)
-                            await asyncio.sleep(2)
-                            ok = True
-                        except Exception as e:
-                            print(f"  [frete] page.goto falhou para {tel}: {safe(str(e)[:60])}", flush=True)
-                            continue
-                    await asyncio.sleep(1.5)
+                    try:
+                        url_transp = f"https://web.whatsapp.com/send/?phone={tel}"
+                        await self.page.goto(url_transp, timeout=20000)
+                        await asyncio.sleep(1.5)
+                    except Exception as e:
+                        print(f"  [frete] page.goto falhou para {trans_nome} ({tel}): {safe(str(e)[:60])}, tentando sidebar...", flush=True)
+                        nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
+                        if nome_trans:
+                            await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
+                        else:
+                            await self._abrir_chat_sidebar(telefone=tel)
+                    # Fecha qualquer painel que tenha aberto (ex: perfil)
+                    await self.page.keyboard.press("Escape")
+                    await asyncio.sleep(0.3)
                     header_atual = await self._ler_header_chat()
-                    # Se perfil aberto, tenta fechar com Escape
-                    if header_atual and "Dados do perfil" in header_atual:
-                        print(f"  [frete] Perfil aberto para {trans_nome} ({tel}), pressionando Escape...", flush=True)
-                        await self.page.keyboard.press("Escape")
-                        await asyncio.sleep(0.5)
-                        header_atual = await self._ler_header_chat()
-                    # Se ainda perfil, força page.goto
-                    if header_atual and "Dados do perfil" in header_atual:
-                        print(f"  [frete] Perfil persistiu, forçando page.goto...", flush=True)
-                        try:
-                            url_transp = f"https://web.whatsapp.com/send/?phone={tel}"
-                            await self.page.goto(url_transp, timeout=20000)
-                            await asyncio.sleep(2)
-                            header_atual = await self._ler_header_chat()
-                        except Exception as e:
-                            print(f"  [frete] page.goto falhou: {safe(str(e)[:60])}", flush=True)
                     # Só valida dígitos se header não for vazio
                     if header_atual:
                         header_digits = re.sub(r"\D", "", header_atual)
