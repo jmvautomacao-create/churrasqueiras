@@ -1,0 +1,250 @@
+==================================================
+   AGENTE DE VENDAS - CHURRASQUEIRAS
+   WhatsApp Web + Groq (LLaMA 3.3)
+==================================================
+Banco de dados inicializado.
+Sessão: C:\Projetos OPENCODE\Churrasqueiras\churrasqueiras-master\data\whatsapp_session
+Aguardando login. Se já estiver logado, isso leva segundos.
+  [0s] WhatsApp | https://web.whatsapp.com/
+  [2s] WhatsApp Business | https://web.whatsapp.com/
+Sidebar detectada - logado!
+
+==================================================
+Ouvindo mensagens... Ctrl+C para parar.
+==================================================
+
+  [mapa] 7 contatos mapeados
+  [10] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [10] Jean BUSINESS [tel:555135240071]: [NÃO LIDA] Oi
+
+>>> NOVA MENSAGEM: Jean BUSINESS: Oi
+
+>>> [WORKER] Processando Jean BUSINESS: Oi
+  [11] Jean BUSINESS [tel:555135240071]: [NÃO LIDA] Oi
+  -> Enviado para 555135240071
+  [20] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+
+>>> NOVA MENSAGEM: Jean BUSINESS: 2
+
+>>> [WORKER] Processando Jean BUSINESS: 2
+  -> XLSX excluído: Solicitacao_Frete_JeanMartins_04-06-2026_2241.xlsx
+  -> Enviado para 555135240071
+  [30] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [30] Jean BUSINESS [tel:555135240071]: Tudo bem! Se precisar de algo, estou aqui.
+  [30 SKIP] Jean BUSINESS: texto já processado (0s atrás)
+  [30] F?tima [tel:555197274892]: N?o
+  [30] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [40] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+
+>>> NOVA MENSAGEM: Jean BUSINESS: Ol?
+
+>>> [WORKER] Processando Jean BUSINESS: Ol?
+  -> Enviado para 555135240071
+  [50] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [60] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [60] Jean BUSINESS [tel:555135240071]: 1
+  [60 SKIP] Jean BUSINESS: envio recente (7.2s)
+  [60] F?tima [tel:555197274892]: N?o
+  [60] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+
+>>> NOVA MENSAGEM: Jean BUSINESS: 1
+
+>>> [WORKER] Processando Jean BUSINESS: 1
+  -> Conversa 1 reaberta para nova compra (Jean BUSINESS)
+  -> Enviado para 555135240071
+  -> Nova apresentação iniciada para Jean BUSINESS
+  [70] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 1, submenu: 0
+  [73] Jean BUSINESS [tel:555135240071]: [NÃO LIDA] 4
+
+>>> NOVA MENSAGEM: Jean BUSINESS: 4
+
+>>> [WORKER] Processando Jean BUSINESS: 4
+  [80] heartbeat - 5 chats, fila: 0, pendentes: 1, menu: 0, submenu: 0
+  -> Enviado para 555135240071
+  [90] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 1
+  [90] Jean BUSINESS [tel:555135240071]: D
+  [90 SKIP] Jean BUSINESS: envio recente (5.1s)
+  [90] F?tima [tel:555197274892]: N?o
+  [90] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+
+>>> NOVA MENSAGEM: Jean BUSINESS: D
+
+>>> [WORKER] Processando Jean BUSINESS: D
+  [frete] endereço completo -> enviando confirmação + xlsx
+  -> Solicitação salva: Solicitacao_Frete_JeanMartins_04-06-2026_2245.xlsx
+  -> Enviado para 555135240071
+  -> Enviado para 555135240071
+  [100] heartbeat - 5 chats, fila: 0, pendentes: 1, menu: 0, submenu: 0
+  -> Enviado para 555199769477
+  -> FOB enviado (CPF: 68225369068)
+  [110] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [120] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [120] Jean BUSINESS [tel:555135240071]: Consultando frete FOB... (CPF: 68225369068)
+  [120 SKIP] Jean BUSINESS: texto já processado (11s atrás)
+  [120] F?tima [tel:555197274892]: N?o
+  [120] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [frete] FOB: texto igual ao anterior, sem resposta nova
+  [frete] Resposta CRUDA FOB (43 chars): 'Consultando frete FOB... (CPF: 68225369068)'
+  [frete] Extraido -> R$ 0.00, prazo=None, prot=None
+  [frete] Encaminhando resposta ao cliente (555135240071): 'Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068)
+
+
+Deseja confirmar o pedido?'
+  -> Enviado para 555135240071
+  [130] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [140] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [150] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [150] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [150 SKIP] Jean BUSINESS: texto igual ao último envio
+  [150] F?tima [tel:555197274892]: N?o
+  [150] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [160] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [170] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [180] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [180] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [180 SKIP] Jean BUSINESS: texto igual ao último envio
+  [180] F?tima [tel:555197274892]: N?o
+  [180] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [190] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [200] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [210] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [210] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [210 SKIP] Jean BUSINESS: texto igual ao último envio
+  [210] F?tima [tel:555197274892]: N?o
+  [210] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [220] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [230] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [240] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [240] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [240 SKIP] Jean BUSINESS: texto igual ao último envio
+  [240] F?tima [tel:555197274892]: N?o
+  [240] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [250] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [260] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [270] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [270] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [270 SKIP] Jean BUSINESS: texto igual ao último envio
+  [270] F?tima [tel:555197274892]: N?o
+  [270] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [280] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [290] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [300] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [300] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [300 SKIP] Jean BUSINESS: texto igual ao último envio
+  [300] F?tima [tel:555197274892]: N?o
+  [300] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [310] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [320] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [330] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [330] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [330 SKIP] Jean BUSINESS: texto igual ao último envio
+  [330] F?tima [tel:555197274892]: N?o
+  [330] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [340] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [350] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [360] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [360] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [360 SKIP] Jean BUSINESS: texto igual ao último envio
+  [360] F?tima [tel:555197274892]: N?o
+  [360] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [370] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [380] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [390] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [390] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [390 SKIP] Jean BUSINESS: texto igual ao último envio
+  [390] F?tima [tel:555197274892]: N?o
+  [390] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [400] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [410] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [420] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [420] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [420 SKIP] Jean BUSINESS: texto igual ao último envio
+  [420] F?tima [tel:555197274892]: N?o
+  [420] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [430] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [440] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [450] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [450] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [450 SKIP] Jean BUSINESS: texto igual ao último envio
+  [450] F?tima [tel:555197274892]: N?o
+  [450] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [460] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [470] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [480] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [480] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [480 SKIP] Jean BUSINESS: texto igual ao último envio
+  [480] F?tima [tel:555197274892]: N?o
+  [480] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [490] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [500] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [510] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [510] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [510 SKIP] Jean BUSINESS: texto igual ao último envio
+  [510] F?tima [tel:555197274892]: N?o
+  [510] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [520] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [mapa] 7 contatos mapeados
+  [530] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [540] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [540] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [540 SKIP] Jean BUSINESS: texto igual ao último envio
+  [540] F?tima [tel:555197274892]: N?o
+  [540] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [550] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [560] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [570] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [570] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [570 SKIP] Jean BUSINESS: texto igual ao último envio
+  [570] F?tima [tel:555197274892]: N?o
+  [570] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  [mapa] 7 contatos mapeados
+  [580] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [590] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [600] heartbeat - 5 chats, fila: 0, pendentes: 0, menu: 0, submenu: 0
+  [600] Jean BUSINESS [tel:555135240071]: Resposta da FOB:
+
+Consultando frete FOB... (CPF: 68225369068
+  [600 SKIP] Jean BUSINESS: texto igual ao último envio
+  [600] F?tima [tel:555197274892]: N?o
+  [600] +55 51 9815-8392 [tel:555198158392]: Mensagem apagada
+  -> Dicts limpos (retidos 2h)

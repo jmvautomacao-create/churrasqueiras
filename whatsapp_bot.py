@@ -70,7 +70,11 @@ class WhatsAppBot:
         self.fila_worker_task: asyncio.Task | None = None
         self.frete_monitor_task: asyncio.Task | None = None
         self.sidebar_lock = asyncio.Lock()
+        self._pagina_perdida = False
         self.ultimo_envio_sucesso: dict[str, float] = {}
+        self.transport_page = None
+        self.transport_ultimo_texto_sidebar: dict[str, str] = {}
+        self.transport_ultimo_id_msg: dict[str, str] = {}
 
     async def iniciar(self):
         self.playwright = await async_playwright().start()
@@ -84,7 +88,9 @@ class WhatsAppBot:
             user_data_dir=user_data_dir, headless=False,
             args=['--window-position=0,0', '--window-size=1280,900'],
         )
-        self.page = await self.context.new_page()
+        # Reusar página existente (evita janela extra duplicada de sessão anterior)
+        pages = self.context.pages
+        self.page = pages[0] if pages else await self.context.new_page()
         await self.page.goto("https://web.whatsapp.com")
         # Trazer janela para o foco e garantir posição no monitor principal
         try:
@@ -113,6 +119,7 @@ class WhatsAppBot:
                     self.fila_mensagens = asyncio.Queue()
                     self.fila_worker_task = asyncio.create_task(self._worker())
                     self.frete_monitor_task = asyncio.create_task(self._monitorar_fretes())
+                    await self._iniciar_transport_page()
                     await asyncio.sleep(2)
                     return True
 
@@ -123,6 +130,7 @@ class WhatsAppBot:
                     self.fila_mensagens = asyncio.Queue()
                     self.fila_worker_task = asyncio.create_task(self._worker())
                     self.frete_monitor_task = asyncio.create_task(self._monitorar_fretes())
+                    await self._iniciar_transport_page()
                     await asyncio.sleep(2)
                     return True
             except Exception as e:
@@ -132,12 +140,23 @@ class WhatsAppBot:
         print("Tempo limite excedido.")
         return False
 
+    async def _iniciar_transport_page(self):
+        try:
+            self.transport_page = await self.context.new_page()
+            await self.transport_page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+            print("  [transport] Página criada para monitoramento de fretes", flush=True)
+        except Exception as e:
+            print(f"  [transport] Erro ao criar página: {safe(str(e)[:80])}", flush=True)
+            self.transport_page = None
+
     async def avaliar(self, codigo: str, *args):
         try:
             return await self.page.evaluate(codigo, *args)
         except Exception as e:
             msg = str(e).lower()
             if "context" in msg or "navigation" in msg or "target closed" in msg:
+                self._pagina_perdida = True
                 print(f"  -> Página perdida durante evaluate: {safe(str(e)[:60])}")
             raise
 
@@ -395,6 +414,13 @@ class WhatsAppBot:
                 del self.ultimo_envio_sucesso[k]
         # Limpa dedup de respostas de frete (retem apenas ultima 1h)
         self._respostas_frete_vistas.clear()
+        # Limpa cache de IDs de mensagens de transportadora
+        for k in list(self.transport_ultimo_id_msg):
+            if agora - self.ultimo_processamento.get(k, 0) > limite:
+                del self.transport_ultimo_id_msg[k]
+        for k in list(self.transport_ultimo_texto_sidebar):
+            if agora - self.ultimo_processamento.get(k, 0) > limite:
+                del self.transport_ultimo_texto_sidebar[k]
         print(f"  -> Dicts limpos (retidos {limite//3600}h)", flush=True)
 
     async def detectar_chats(self):
@@ -478,16 +504,16 @@ class WhatsAppBot:
         while True:
             try:
                 if self.fretes_pendentes:
-                    await self._processar_fretes_pendentes()
+                    await self._transport_processar_fretes()
                 await self._verificar_pagamentos_pendentes()
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[FRETE MONITOR] {safe(e)}", flush=True)
                 import traceback
                 traceback.print_exc()
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
 
     async def _verificar_pagamentos_pendentes(self):
         try:
@@ -578,7 +604,7 @@ class WhatsAppBot:
                     if not nome_raw or nome_raw == "DEBUG" or nome_raw.startswith("Filt"):
                         continue
 
-                    # Transportadoras: ignorar no loop principal (processadas em _processar_fretes_pendentes)
+                    # Transportadoras: ignorar no loop principal (processadas via transport_page/IndexedDB)
                     transportadoras_tels = set(t["numero"] for t in TRANSPORTADORAS) | {self.TRANSPORTADORA_FOB}
                     if telefone in transportadoras_tels:
                         if c % 30 == 0:
@@ -669,10 +695,6 @@ class WhatsAppBot:
 
                 self.primeiro_ciclo = False
 
-                # Auto-advance removido: menu e submenu sao enviados completos em uma unica mensagem
-
-                if c % 60 == 0:
-                    await self._processar_fretes_pendentes()
                 if c % 600 == 0:
                     await self._limpar_dicts_antigos()
 
@@ -1164,8 +1186,8 @@ class WhatsAppBot:
     async def enviar_midia_para_cliente(self, numero: str, caminho: str, legenda: str = "", force_document: bool = False):
         await self.enviar_midia(numero, caminho, legenda, force_document)
 
-    def _gerar_id_frete(self, cpf_cnpj: str) -> str:
-        return cpf_cnpj
+    def _gerar_id_frete(self, telefone: str) -> str:
+        return telefone
 
     async def solicitar_frete_transportadora(self, transportadora: dict, produto, cliente_info: dict, request_id: str):
         nome = cliente_info.get("nome", "N/I")
@@ -1182,7 +1204,7 @@ class WhatsAppBot:
             f"CEP: {cliente_info.get('cep', 'N/I')}\n"
             f"{'='*30}\n"
             f"Favor retornar as informações abaixo:\n\n"
-            f"CPF/CNPJ: {request_id}\n"
+            f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA:    dias úteis"
@@ -1338,27 +1360,30 @@ class WhatsAppBot:
             print(f"  [xlsx] Erro ao atualizar venda paga: {safe(str(e)[:80])}", flush=True)
 
     async def _ler_msg_anterior_usuario(self):
-        raw = await self.avaliar("""
-            () => {
-                const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
-                if (!painel) return '';
-                const divs = painel.querySelectorAll(':scope .message-in, :scope .message-out');
-                const todas = [];
-                for (const el of divs) {
-                    const spans = el.querySelectorAll('span[dir="ltr"], span[dir="auto"]');
-                    let textoCompleto = '';
-                    for (const s of spans) {
-                        const t = s.textContent.trim();
-                        if (t) textoCompleto += t + ' ';
+        try:
+            raw = await self.page.evaluate("""
+                () => {
+                    const painel = document.querySelector('#main [data-testid="conversation-panel-messages"]');
+                    if (!painel) return '';
+                    const msgs = painel.querySelectorAll(':scope .message-in');
+                    const usuarios = [];
+                    for (const el of msgs) {
+                        const spans = el.querySelectorAll('span[dir="ltr"], span[dir="auto"]');
+                        let textoCompleto = '';
+                        for (const s of spans) {
+                            const t = s.textContent.trim();
+                            if (t) textoCompleto += t + ' ';
+                        }
+                        const t = textoCompleto.trim();
+                        if (t) usuarios.push(t);
                     }
-                    const t = textoCompleto.trim();
-                    if (t) todas.push(t);
+                    if (usuarios.length === 0) return '';
+                    return usuarios[usuarios.length - 1];
                 }
-                if (todas.length === 0) return '';
-                return todas[todas.length - 1];
-            }
-        """)
-        return raw.strip()
+            """)
+            return raw.strip()
+        except Exception:
+            return ""
 
     async def _ler_header_chat(self) -> str:
         raw = await self.avaliar("""
@@ -1401,7 +1426,7 @@ class WhatsAppBot:
             "cep": cliente.get("cep", ""),
             "estado": cliente.get("estado", ""),
         }
-        request_id = self._gerar_id_frete(ci["cpf_cnpj"])
+        request_id = self._gerar_id_frete(telefone)
         transportadoras_reg = {}
         for t in TRANSPORTADORAS:
             cot_id = criar_cotacao(conv_id, t["nome"])
@@ -1424,6 +1449,11 @@ class WhatsAppBot:
             "transportadoras": transportadoras_reg,
             "status": "enviado",
         }
+        # Inicia marcador de timestamps para cada transportadora (evita reprocessar msgs antigas)
+        agora = time.time()
+        for t in TRANSPORTADORAS:
+            self.transport_ultimo_id_msg[t["numero"]] = str(agora)
+        self.transport_ultimo_id_msg[self.TRANSPORTADORA_FOB] = str(agora)
         # Captura texto_antes de cada transportadora ANTES de enviar (para ignorar msgs antigas)
         for nome, reg in list(transportadoras_reg.items()):
             async with self.sidebar_lock:
@@ -1433,11 +1463,11 @@ class WhatsAppBot:
                     if msg_atual:
                         self.fretes_pendentes[request_id]["transportadoras"][nome]["texto_antes"] = msg_atual
         await self.enviar_para_cliente(telefone,
-            f"Consultando fretes... (CPF: {request_id})")
+            f"Consultando fretes... (Tel: {request_id})")
         # Envia para transportadoras A/B via sidebar
         for t in TRANSPORTADORAS:
             await self.solicitar_frete_transportadora(t, produto, ci, request_id)
-        # Envia para FOB via page.goto (pode nao estar na sidebar)
+        # Envia para FOB via transport page (sem page.goto na pagina principal)
         await self._enviar_fob_msg(produto, ci, request_id)
 
     async def _enviar_fob_msg(self, produto, cliente_info: dict, request_id: str):
@@ -1454,47 +1484,57 @@ class WhatsAppBot:
             f"Endereço: {endereco}\n"
             f"{'='*30}\n"
             f"Favor retornar as informações abaixo:\n\n"
-            f"CPF/CNPJ: {request_id}\n"
+            f"CPF/CNPJ: {cliente_info.get('cpf_cnpj', 'N/I')}\n"
             f"Protocolo Transportadora: \n"
             f"VALOR DO FRETE: R$ \n"
             f"PRAZO DE ENTREGA:    dias úteis"
         )
-        # Tenta enviar via sidebar primeiro (sem page.goto)
-        ok = await self.enviar_texto(self.TRANSPORTADORA_FOB, msg)
+        tp = self.transport_page
+        if not tp:
+            print(f"  [frete] Sem transport_page, pulando FOB", flush=True)
+            return
+        # Tenta enviar via sidebar na transport_page
+        ok = await self._transport_enviar_texto(tp, self.TRANSPORTADORA_FOB, msg)
         if ok:
-            print(f"  -> FOB enviado (CPF: {request_id})", flush=True)
             self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
             self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            print(f"  -> FOB enviado via transport page sidebar (Tel: {request_id})", flush=True)
             if request_id in self.fretes_pendentes:
                 for t in self.fretes_pendentes[request_id]["transportadoras"].values():
                     if t["telefone"] == self.TRANSPORTADORA_FOB:
                         t["_inicializado"] = True
             return
-        # Fallback: page.goto (se FOB não estiver na sidebar)
-        print(f"  [frete] FOB não encontrado na sidebar, navegando direto...", flush=True)
+        # Fallback: navegar transport_page para FOB (nao afeta pagina principal)
+        print(f"  [frete] FOB não encontrado na sidebar da transport_page, navegando direto...", flush=True)
         url_fob = f"https://web.whatsapp.com/send/?phone={self.TRANSPORTADORA_FOB}"
         try:
-            await self.page.goto(url_fob, timeout=20000)
+            await tp.goto(url_fob, timeout=30000)
             await asyncio.sleep(2)
-            caixa = await self._aguardar_input(10)
-            if caixa:
-                try:
-                    await caixa.fill(msg)
-                except Exception:
-                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                    await self.page.keyboard.type(msg, delay=20)
-                self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
-                self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
-                await self._clicar_enviar(usar_enter=True)
-                print(f"  -> FOB enviado (CPF: {request_id}) (goto)", flush=True)
-                if request_id in self.fretes_pendentes:
-                    for t in self.fretes_pendentes[request_id]["transportadoras"].values():
-                        if t["telefone"] == self.TRANSPORTADORA_FOB:
-                            t["_inicializado"] = True
-            else:
-                print(f"  [frete] Input não encontrado após navegação FOB", flush=True)
+            caixa = await self._transport_aguardar_input(tp, timeout=8)
+            if not caixa:
+                print(f"  [frete] Input não encontrado na transport_page", flush=True)
+                # Voltar transport page para whatsapp principal
+                await tp.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=20000)
+                return
+            try:
+                await caixa.fill(msg)
+            except:
+                await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                await tp.keyboard.type(msg, delay=20)
+            await tp.keyboard.press("Enter")
+            await asyncio.sleep(1)
+            self.ultimo_envio[self.TRANSPORTADORA_FOB] = time.time()
+            self.ultimo_envio_texto[self.TRANSPORTADORA_FOB] = msg
+            print(f"  -> FOB enviado via transport_page goto (Tel: {request_id})", flush=True)
+            if request_id in self.fretes_pendentes:
+                for t in self.fretes_pendentes[request_id]["transportadoras"].values():
+                    if t["telefone"] == self.TRANSPORTADORA_FOB:
+                        t["_inicializado"] = True
+            # Voltar transport page para whatsapp principal
+            await tp.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(1)
         except Exception as e:
-            print(f"  [frete] Erro ao navegar para FOB: {safe(str(e)[:60])}", flush=True)
+            print(f"  [frete] Erro ao enviar para FOB: {safe(str(e)[:60])}", flush=True)
 
     async def _finalizar_coleta_frete(self, conv_id: int, cliente_id: int, telefone: str, nome_sidebar: str = ""):
         cliente_completo = cliente_por_telefone(telefone)
@@ -1535,7 +1575,7 @@ class WhatsAppBot:
             "estado": cliente.get("estado", "N/I"),
             "cep": cliente.get("cep", "N/I"),
         }
-        request_id = self._gerar_id_frete(cliente.get("cpf_cnpj", ""))
+        request_id = self._gerar_id_frete(telefone)
         cot_id = criar_cotacao(conv_id, "FOB")
         self.fretes_pendentes[request_id] = {
             "telefone": telefone,
@@ -1553,6 +1593,7 @@ class WhatsAppBot:
             },
             "status": "enviado",
         }
+        self.transport_ultimo_id_msg[self.TRANSPORTADORA_FOB] = str(time.time())
         # Persiste xlsx_path na cotacao no banco
         if xlsx_path:
             from database import get_connection
@@ -1561,142 +1602,346 @@ class WhatsAppBot:
             conn.commit()
             conn.close()
         await self.enviar_para_cliente(telefone,
-            f"Consultando frete FOB... (CPF: {request_id})")
+            f"Consultando frete FOB... (Tel: {request_id})")
         await self._enviar_fob_msg(produto, ci, request_id)
 
-    async def _processar_fretes_pendentes(self):
+    async def _ler_sidebar_text_por_nome(self, nome: str) -> str:
+        nome_json = json.dumps(nome)
+        raw = await self.avaliar(f"""
+            () => {{
+                const rows = document.querySelectorAll('#side [role="row"]');
+                for (const row of rows) {{
+                    const el = row.querySelector('[title]');
+                    if (!el) continue;
+                    if (el.getAttribute('title') === {nome_json}) {{
+                        const spans = row.querySelectorAll('span[dir]');
+                        const titulo = el.getAttribute('title');
+                        for (const sp of spans) {{
+                            if (sp.getAttribute('title') !== titulo && sp.textContent.trim()) {{
+                                return sp.textContent.trim();
+                            }}
+                        }}
+                    }}
+                }}
+                return '';
+            }}
+        """)
+        return raw.strip()
+
+    async def _chat_tem_badge_nao_lida(self, nome: str) -> bool:
+        nome_json = json.dumps(nome)
+        raw = await self.avaliar(f"""
+            () => {{
+                const rows = document.querySelectorAll('#side [role="row"]');
+                for (const row of rows) {{
+                    const el = row.querySelector('[title]');
+                    if (!el) continue;
+                    if (el.getAttribute('title') === {nome_json}) {{
+                        const badge = row.querySelector('[data-testid="icon-unread-count"]')
+                            || row.querySelector('[aria-label*="nao lida"]')
+                            || row.querySelector('[aria-label*="unread"]');
+                        return !!badge;
+                    }}
+                }}
+                return false;
+            }}
+        """)
+        return bool(raw)
+
+    async def _transport_processar_fretes(self):
         if not self.fretes_pendentes:
             return
-        for req_id, req in list(self.fretes_pendentes.items()):
-            if req["status"] != "enviado":
+        tp = self.transport_page
+        if not tp:
+            print("  [transport] Sem transport_page, recriando...", flush=True)
+            await self._iniciar_transport_page()
+            tp = self.transport_page
+            if not tp:
+                return
+        try:
+            novas = await self._transport_detecta_novas_mensagens(tp)
+        except Exception as e:
+            print(f"  [transport] Erro detecção: {safe(str(e)[:60])}", flush=True)
+            return
+        if not novas:
+            return
+        for tel_trans, msg_text in novas:
+            await self._transport_processar_resposta(tp, tel_trans, msg_text)
+
+    async def _transport_detecta_novas_mensagens(self, tp):
+        transport_tels = [t["numero"] for t in TRANSPORTADORAS] + [self.TRANSPORTADORA_FOB]
+        codigo = f"""
+            async (selfNum) => {{
+                const db = await new Promise(r => {{
+                    const req = indexedDB.open('model-storage');
+                    req.onsuccess = () => r(req.result);
+                }});
+                const tels = {json.dumps(transport_tels)};
+                const out = [];
+                const tx = db.transaction('message', 'readonly');
+                const store = tx.objectStore('message');
+                const all = await new Promise(r => {{
+                    const req = store.getAll();
+                    req.onsuccess = () => r(req.result);
+                }});
+                for (const m of all) {{
+                    if (!m.id) continue;
+                    let fromUser = '';
+                    if (m.from && typeof m.from === 'string') {{
+                        const match = m.from.match(/^(\\d+)@/);
+                        if (match && match[1] !== selfNum) fromUser = match[1];
+                    }}
+                    if (!fromUser && m.to) {{
+                        const toUser = typeof m.to === 'object' ? (m.to.user || '') :
+                                       (typeof m.to === 'string' ? m.to.split('@')[0] : '');
+                        if (/^\\d+$/.test(toUser) && toUser !== selfNum) fromUser = toUser;
+                    }}
+                    if (!fromUser || !tels.includes(fromUser)) continue;
+                    let texto = '';
+                    if (typeof m.body === 'string') texto = m.body;
+                    if (m.message && m.message.conversation) texto = m.message.conversation;
+                    const ts = m.t || m.messageTimestamp || 0;
+                    out.push({{tel: fromUser, id: m.id, texto, ts}});
+                }}
+                const last = {{}};
+                for (const item of out) {{
+                    const prev = last[item.tel];
+                    if (!prev || item.ts > prev.ts) last[item.tel] = item;
+                }}
+                return JSON.stringify(Object.values(last));
+            }}
+        """
+        try:
+            raw = await tp.evaluate(codigo, SEU_NUMERO)
+        except Exception as e:
+            print(f"  [transport] Erro IndexedDB: {safe(str(e)[:60])}", flush=True)
+            return []
+        try:
+            mensagens = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        novas = []
+        for m in mensagens:
+            tel = m["tel"]
+            texto = m.get("texto", "")
+            ts = float(m.get("ts", 0))
+            if not texto or not ts:
                 continue
-            for trans_nome, reg in list(req["transportadoras"].items()):
-                if reg["respondido"]:
-                    continue
-                tel = reg["telefone"]
-                # Pula transportadoras com número placeholder
-                if tel in ("555199999991", "555199999992"):
-                    print(f"  [frete] {trans_nome} ({tel}) número placeholder, pulando", flush=True)
-                    continue
-                # Tenta abrir por nome mapeado primeiro (mais confiável que telefone)
-                nome_trans = next((n for n, t in self.mapa_contatos.items() if t == tel), "")
-                async with self.sidebar_lock:
-                    if nome_trans:
-                        ok = await self._abrir_chat_sidebar(nome=nome_trans, telefone=tel)
-                    else:
-                        ok = await self._abrir_chat_sidebar(telefone=tel)
-                    if not ok:
-                        print(f"  [frete] Chat não encontrado para {trans_nome} ({tel})", flush=True)
-                        continue
-                    await asyncio.sleep(1.5)
-                    header_atual = await self._ler_header_chat()
-                    if header_atual:
-                        header_digits = re.sub(r"\D", "", header_atual)
-                        if header_digits and tel not in header_digits and header_digits not in tel:
-                            print(f"  [frete] Header '{safe(header_atual)}' não corresponde a {tel}, ignorando ciclo", flush=True)
-                            continue
-                    resp = await self._ler_msg_anterior_usuario()
-                if not resp:
-                    continue
-                # Se o texto não mudou, ainda sem resposta nova
-                if resp == reg["texto_antes"]:
-                    continue
-                # Dedup entre ciclos (so add se o req_id realmente corresponder)
-                dedup_key = f"{req_id}|{tel}|{resp}"
-                if dedup_key in self._respostas_frete_vistas:
-                    continue
-                if req_id not in resp:
-                    print(f"  [frete] Resposta (CPF: {req_id}) ignorada: req_id não encontrado na mensagem (pode ser de outro pedido)", flush=True)
-                    self._respostas_frete_vistas.add(dedup_key)
-                    continue
-                self._respostas_frete_vistas.add(dedup_key)
-                print(f"  [frete] Resposta CRUDA {trans_nome} (CPF: {req_id}) ({len(resp)} chars): '{safe(resp)}'", flush=True)
+            ult_ts = float(self.transport_ultimo_id_msg.get(tel, 0))
+            if ts > ult_ts:
+                self.transport_ultimo_id_msg[tel] = str(ts)
+                novas.append((tel, texto))
+        return novas
+
+    async def _transport_processar_resposta(self, tp, tel_trans, texto_resposta):
+        req_id = None
+        req = None
+        for rid, r in list(self.fretes_pendentes.items()):
+            for trans_nome, reg in list(r["transportadoras"].items()):
+                if reg["telefone"] == tel_trans and not reg["respondido"]:
+                    req_id = rid
+                    req = r
+                    break
+            if req_id:
+                break
+        if not req_id or not req:
+            print(f"  [transport] Resposta de {tel_trans} sem frete pendente", flush=True)
+            return
+        trans_nome = None
+        trans_reg = None
+        for tn, reg in req["transportadoras"].items():
+            if reg["telefone"] == tel_trans:
+                trans_nome = tn
+                trans_reg = reg
+                break
+        if not trans_nome or not trans_reg:
+            return
+        print(f"  [transport] Resposta detectada de {trans_nome} para Tel {req_id}", flush=True)
+        valor = self.extrair_valor_frete(texto_resposta)
+        prazo = self.extrair_prazo(texto_resposta)
+        prot_transp = self.extrair_protocolo_transportadora(texto_resposta)
+        print(f"  [transport] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
+        msg_cliente = f"Frete {trans_nome} (Tel: {req_id}):\n"
+        if valor > 0:
+            msg_cliente += f"Valor: R$ {valor:.2f}\n"
+        else:
+            msg_cliente += f"Valor: {texto_resposta}\n"
+        msg_cliente += f"Prazo: {prazo or 'a confirmar'}\n"
+        if prot_transp:
+            msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
+        if valor > 0:
+            msg_cliente += f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n"
+        msg_cliente += f"\nDeseja confirmar o pedido?"
+        tel_cliente = req["telefone"]
+        ok = await self._transport_enviar_texto(tp, tel_cliente, msg_cliente, req.get("nome_sidebar", ""))
+        if ok:
+            trans_reg["respondido"] = True
+            if trans_reg.get("cot_id"):
+                atualizar_cotacao(trans_reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
+            atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
+            xlsx_path = req.get("xlsx_path")
+            if xlsx_path and os.path.exists(xlsx_path):
                 try:
-                    valor = self.extrair_valor_frete(resp)
-                    prazo = self.extrair_prazo(resp)
-                    prot_transp = self.extrair_protocolo_transportadora(resp)
-                    print(f"  [frete] Extraido -> R$ {valor:.2f}, prazo={prazo or 'None'}, prot={prot_transp or 'None'}", flush=True)
+                    from openpyxl import load_workbook
+                    wb = load_workbook(xlsx_path)
+                    ws = wb.active
+                    for row in ws.iter_rows(min_row=2, max_col=2):
+                        campo = row[0].value
+                        if campo == "STATUS":
+                            row[1].value = "Cotado"
+                        elif campo == "VALOR DO FRETE FOB" and valor > 0:
+                            row[1].value = f"R$ {valor:.2f}"
+                        elif campo == "PROTOCOLO TRANSPORTADORA" and prot_transp:
+                            row[1].value = prot_transp
+                        elif campo == "PRAZO DE ENTREGA" and prazo:
+                            row[1].value = prazo
+                    wb.save(xlsx_path)
+                    print(f"  -> Status atualizado em {os.path.basename(xlsx_path)}", flush=True)
+                except Exception as e2:
+                    print(f"  [transport] Erro xlsx: {safe(str(e2)[:60])}", flush=True)
+            print(f"  [transport] Resposta {trans_nome} encaminhada ao cliente", flush=True)
+        else:
+            print(f"  [transport] Falha ao enviar para cliente {tel_cliente}, tentará novamente", flush=True)
+        if all(t["respondido"] for t in req["transportadoras"].values()):
+            self.fretes_pendentes.pop(req_id, None)
 
-                    incompleto = (valor <= 0) or (prazo is None) or (prot_transp is None)
-                    if incompleto:
-                        reg["tentativas"] = reg.get("tentativas", 0) + 1
-                        if reg["tentativas"] >= 3:
-                            print(f"  [frete] Resposta (CPF: {req_id}) incompleta apos {reg['tentativas']} tentativas, encaminhando mesmo assim", flush=True)
-                        else:
-                            print(f"  [frete] Resposta (CPF: {req_id}) incompleta (tentativa {reg['tentativas']}/3), reenviando solicitacao...", flush=True)
-                            cliente_info = req.get("cliente_info", {})
-                            await self._enviar_fob_msg(req["produto"], cliente_info, req_id)
-                            continue
+    async def _transport_enviar_texto(self, tp, numero, texto, nome_sidebar=""):
+        try:
+            if not nome_sidebar:
+                nome_sidebar = next((n for n, t in self.mapa_contatos.items() if t == numero), "")
+            nomes = [nome_sidebar] if nome_sidebar else []
+            nomes += [n for n, t in self.mapa_contatos.items() if t == numero]
+            chat_aberto = False
+            for nome in nomes:
+                if not nome:
+                    continue
+                if await self._transport_chat_ja_aberto(tp, nome):
+                    chat_aberto = True
+                    break
+            if not chat_aberto:
+                for nome in nomes:
+                    if not nome:
+                        continue
+                    if await self._transport_abrir_chat_sidebar(tp, nome, numero):
+                        chat_aberto = True
+                        break
+            if not chat_aberto:
+                if await self._transport_abrir_chat_sidebar(tp, telefone=numero):
+                    chat_aberto = True
+            if not chat_aberto:
+                print(f"  [transport] Não foi possível abrir chat para {numero}", flush=True)
+                return False
+            caixa = await self._transport_aguardar_input(tp)
+            if not caixa:
+                print(f"  [transport] Input não disponível para {numero}", flush=True)
+                return False
+            try:
+                await caixa.fill(texto)
+            except Exception:
+                await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
+                await tp.keyboard.type(texto, delay=20)
+            await tp.keyboard.press("Enter")
+            await asyncio.sleep(0.5)
+            print(f"  [transport] Enviado para {numero}", flush=True)
+            return True
+        except Exception as e:
+            print(f"  [transport] Erro envio: {safe(str(e)[:80])}", flush=True)
+            return False
 
-                    reg["respondido"] = True
-                    if reg.get("cot_id"):
-                        atualizar_cotacao(reg["cot_id"], valor_frete=valor, prazo=prazo, status="recebida")
-                    msg_cliente = (
-                        f"Frete {trans_nome} (CPF: {req_id}):\n"
-                    )
-                    if valor > 0:
-                        msg_cliente += f"Valor: R$ {valor:.2f}\n"
-                    else:
-                        msg_cliente += f"Valor: {resp}\n"
-                    msg_cliente += f"Prazo: {prazo or 'a confirmar'}\n"
-                    if prot_transp:
-                        msg_cliente += f"Protocolo Transportadora: {prot_transp}\n"
-                    if valor > 0:
-                        msg_cliente += f"Total c/ produto: R$ {req['produto']['preco'] + valor:.2f}\n"
-                    msg_cliente += f"\nDeseja confirmar o pedido?"
-                    tel_cliente = req["telefone"]
-                    nome_sidebar_cliente = req.get("nome_sidebar", "")
-                    ok = await self.enviar_para_cliente(tel_cliente, msg_cliente, nome_sidebar_cliente)
-                    if not ok:
-                        print(f"  [frete] sidebar falhou para {tel_cliente}, tentando page.goto...", flush=True)
-                        try:
-                            url_cliente = f"https://web.whatsapp.com/send/?phone={tel_cliente}"
-                            await self.page.goto(url_cliente, timeout=20000)
-                            await asyncio.sleep(2)
-                            caixa = await self._aguardar_input(10)
-                            if caixa:
-                                try:
-                                    await caixa.fill(msg_cliente)
-                                except Exception:
-                                    await caixa.evaluate("el => { el.focus(); el.innerHTML = ''; }")
-                                    await self.page.keyboard.type(msg_cliente, delay=20)
-                                await self._clicar_enviar(usar_enter=True)
-                                print(f"  [frete] Resposta enviada via goto para {tel_cliente}", flush=True)
-                                ok = True
-                            else:
-                                print(f"  [frete] Input não encontrado para {tel_cliente}", flush=True)
-                        except Exception as e:
-                            print(f"  [frete] Erro page.goto para {tel_cliente}: {safe(str(e)[:60])}", flush=True)
-                    if not ok:
-                        print(f"  [frete] Falha ao enviar resposta ao cliente {tel_cliente}", flush=True)
-                    atualizar_etapa_conversa(req["conv_id"], "frete_confirmar")
-                    xlsx_path = req.get("xlsx_path")
-                    if xlsx_path and os.path.exists(xlsx_path):
-                        try:
-                            from openpyxl import load_workbook
-                            wb = load_workbook(xlsx_path)
-                            ws = wb.active
-                            for row in ws.iter_rows(min_row=2, max_col=2):
-                                campo = row[0].value
-                                if campo == "STATUS":
-                                    row[1].value = "Cotado"
-                                elif campo == "VALOR DO FRETE FOB" and valor > 0:
-                                    row[1].value = f"R$ {valor:.2f}"
-                                elif campo == "PROTOCOLO TRANSPORTADORA" and prot_transp:
-                                    row[1].value = prot_transp
-                                elif campo == "PRAZO DE ENTREGA" and prazo:
-                                    row[1].value = prazo
-                            wb.save(xlsx_path)
-                            print(f"  -> Status atualizado para 'Cotado' em {os.path.basename(xlsx_path)}", flush=True)
-                        except Exception as e2:
-                            print(f"  [frete] Erro ao atualizar xlsx: {safe(str(e2)[:60])}", flush=True)
-                    print(f"  [frete] Resposta {trans_nome} encaminhada ao cliente", flush=True)
-                except Exception as e:
-                    print(f"  [frete] Erro ao processar resposta {trans_nome}: {safe(str(e)[:100])}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-            if all(t["respondido"] for t in req["transportadoras"].values()):
-                self.fretes_pendentes.pop(req_id, None)
+    async def _transport_chat_ja_aberto(self, tp, nome):
+        if not nome:
+            return False
+        try:
+            return await tp.evaluate(f"""
+                () => {{
+                    const h = document.querySelector('#main header');
+                    if (!h) return false;
+                    const el = h.querySelector('[title]');
+                    if (!el) return false;
+                    const title = (el.getAttribute('title') || '').trim();
+                    if (!title) return false;
+                    const norm = s => s.normalize('NFKC').replace(/[\\s\\u00a0\\u200b\\u200c\\u200d\\ufeff]+/g, ' ').trim();
+                    const alvo = {json.dumps(nome[:80])};
+                    return norm(title).includes(norm(alvo)) || norm(alvo).includes(norm(title));
+                }}
+            """)
+        except:
+            return False
+
+    async def _transport_abrir_chat_sidebar(self, tp, nome="", telefone=""):
+        try:
+            await tp.wait_for_selector('#side', timeout=10000)
+            if nome:
+                for _ in range(5):
+                    try:
+                        el = tp.get_by_title(nome).first
+                        if await el.count() > 0 and await el.is_visible():
+                            await el.click()
+                            await asyncio.sleep(0.4)
+                            panel = await tp.query_selector('[data-testid="conversation-panel-main"]')
+                            if panel:
+                                return True
+                    except:
+                        pass
+                    ok = await tp.evaluate(f"""
+                        () => {{
+                            const norm = s => s.normalize('NFKC').replace(/[\\s\\u00a0\\u200b\\u200c\\u200d\\ufeff]+/g, ' ').trim();
+                            const rows = document.querySelectorAll('#side [role="row"]');
+                            const alvo = {json.dumps(nome)};
+                            const alvo_norm = norm(alvo);
+                            for (const row of rows) {{
+                                const el = row.querySelector('[title]');
+                                if (el && norm(el.getAttribute('title')) === alvo_norm) {{
+                                    row.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}
+                    """)
+                    if ok:
+                        await asyncio.sleep(0.4)
+                        return True
+                    await asyncio.sleep(0.5)
+            if telefone:
+                for _ in range(3):
+                    ok = await tp.evaluate(f"""
+                        (mapa) => {{
+                            const tel = {json.dumps(telefone)};
+                            const rows = document.querySelectorAll('#side [role="row"]');
+                            for (const row of rows) {{
+                                const titleEl = row.querySelector('[title]');
+                                if (!titleEl) continue;
+                                const name = titleEl.getAttribute('title') || '';
+                                const titleTel = name.replace(/\\D/g, '');
+                                if (titleTel && (titleTel.endsWith(tel) || tel.endsWith(titleTel))) {{
+                                    row.click();
+                                    return true;
+                                }}
+                                const phoneFromMapa = mapa[name];
+                                if (phoneFromMapa && (phoneFromMapa === tel || tel.endsWith(phoneFromMapa) || phoneFromMapa.endsWith(tel))) {{
+                                    row.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}
+                    """, self.mapa_contatos)
+                    if ok:
+                        await asyncio.sleep(0.4)
+                        return True
+                    await asyncio.sleep(0.5)
+            return False
+        except:
+            return False
+
+    async def _transport_aguardar_input(self, tp, timeout=4):
+        for _ in range(timeout * 2):
+            el = await tp.query_selector('#main [contenteditable="true"]')
+            if el:
+                return el
+            await asyncio.sleep(0.25)
+        return None
 
     async def processar_mensagem(self, remetente: str, msg_texto: str, telefone: str = "", nome_sidebar: str = ""):
         try:
@@ -2326,14 +2571,21 @@ class WhatsAppBot:
 
     def extrair_valor_frete(self, texto: str) -> float:
         padroes = [
-            r"(?:VALOR DO FRETE|FRETE)\s*:?\s*(?:R\$)?\s*(\d+(?:[.,]\d+)?)",
-            r"(?:R\$)\s*(\d+(?:[.,]\d+)?)",
+            r"(?:VALOR\s*(?:DO\s*)?FRETE|FRETE)\s*:?\s*(?:R\$)?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)",
+            r"(?:R\$)\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)",
+            r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))\s*(?:reais|R\$)?",
         ]
         for p in padroes:
             m = re.search(p, texto, re.IGNORECASE)
             if m:
                 val = m.group(1)
-                if "," in val:
+                val = re.sub(r"[^\d,.]", "", val)
+                if "," in val and "." in val:
+                    if val.rindex(",") > val.rindex("."):
+                        val = val.replace(".", "").replace(",", ".")
+                    else:
+                        val = val.replace(",", "")
+                elif "," in val:
                     val = val.replace(".", "").replace(",", ".")
                 return float(val)
         return 0.0
@@ -2341,6 +2593,7 @@ class WhatsAppBot:
     def extrair_prazo(self, texto: str) -> str | None:
         padroes = [
             r"(\d+[_\s-]*dias?\s*úteis?)",
+            r"(\d+[_\s-]*dias?\s*uteis)",
             r"(\d+[_\s-]*dias?\s*corridos?)",
             r"(\d+[_\s-]*dias?)",
         ]
@@ -2351,12 +2604,19 @@ class WhatsAppBot:
         return None
 
     def extrair_protocolo_transportadora(self, texto: str) -> str | None:
-        m = re.search(r"Protocolo\s+Transportadora:\s*(.+)", texto, re.IGNORECASE)
-        if m:
-            val = m.group(1).strip()
-            if not val or val.startswith(("VALOR", "PRAZO", "Protocolo")):
-                return None
-            return val
+        padroes = [
+            r"Protocolo\s+Transportadora:\s*(\S+)",
+            r"Protocolo[:\s]+\s*(\S+)",
+            r"Prot[.:]?\s*(?:transp[.:]?)?\s*(\S+)",
+            r"(?:COD[.:]?|PROT(?!OCOL)[.:]?|PEDIDO[.:]?)\s*(\d{4,})",
+        ]
+        for p in padroes:
+            m = re.search(p, texto, re.IGNORECASE)
+            if m:
+                val = m.group(1).strip()
+                if len(val) < 3 or val.startswith(("VALOR", "PRAZO", "Protocolo")):
+                    continue
+                return val
         return None
 
     async def parar(self):
@@ -2374,6 +2634,12 @@ class WhatsAppBot:
             except asyncio.CancelledError:
                 pass
             self.fila_worker_task = None
+        if self.transport_page:
+            try:
+                await self.transport_page.close()
+            except:
+                pass
+            self.transport_page = None
         if self.context:
             await self.context.close()
         if self.playwright:
