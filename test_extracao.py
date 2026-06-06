@@ -53,7 +53,7 @@ class BotStub:
             m = re.search(p, texto, re.IGNORECASE)
             if m:
                 val = m.group(1).strip()
-                if len(val) < 3 or val.startswith(("VALOR", "PRAZO", "Protocolo")):
+                if val.startswith(("VALOR", "PRAZO", "Protocolo")):
                     continue
                 return val
         return None
@@ -157,6 +157,9 @@ teste("Sem protocolo", bot.extrair_protocolo_transportadora,
 
 teste("PROTOCOLO TRANSPORTADORA maiusculo", bot.extrair_protocolo_transportadora,
       "PROTOCOLO TRANSPORTADORA: XYZ999", "XYZ999")
+
+teste("Protocolo valor unico digito", bot.extrair_protocolo_transportadora,
+      "Protocolo Transportadora: 1", "1")
 
 # ─── Mensagens completas simulando resposta real da FOB ───
 
